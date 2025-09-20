@@ -1,0 +1,1244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Redis Replication and High Availability: Building Resilient Systems</title>
+</head>
+<body>
+    <header>
+        <h1>Redis Replication and High Availability: Building Resilient Systems</h1>
+        <p><em>Master Redis replication, failover strategies, and Redis Sentinel for bulletproof deployments</em></p>
+        <p><strong>Published:</strong> Blog Post #5 of Redis Mastery Series</p>
+    </header>
+
+    <main>
+        <section>
+            <h2>Introduction</h2>
+            <p>A single Redis instance, no matter how well-configured, represents a single point of failure. What happens when your Redis server crashes, needs maintenance, or experiences hardware failure? Without proper replication and high availability setup, your application could face significant downtime and potential data loss.</p>
+            
+            <p>Redis provides robust replication capabilities and high availability solutions through Redis Sentinel. In this comprehensive guide, we'll explore how to set up master-slave replication, configure automatic failover, and build resilient Redis deployments that can withstand failures while maintaining data consistency and application performance.</p>
+            
+            <p>Understanding replication and high availability is essential for any production Redis deployment. The strategies covered here will help you achieve 99.9%+ uptime and ensure your applications remain responsive even during server failures.</p>
+        </section>
+
+        <section>
+            <h2>Understanding Redis Replication</h2>
+            
+            <h3>What is Redis Replication?</h3>
+            <p>Redis replication allows you to create copies of your master Redis instance on one or more slave servers. This provides several benefits:</p>
+            <ul>
+                <li><strong>High Availability:</strong> Slaves can take over if the master fails</li>
+                <li><strong>Read Scaling:</strong> Distribute read operations across multiple slaves</li>
+                <li><strong>Data Redundancy:</strong> Multiple copies protect against data loss</li>
+                <li><strong>Backup Operations:</strong> Perform backups on slaves without affecting master performance</li>
+                <li><strong>Geographic Distribution:</strong> Place slaves in different locations</li>
+            </ul>
+
+            <h3>Replication Architecture</h3>
+            <p>Redis uses an asynchronous master-slave replication model:</p>
+            
+            <h4>Master-Slave Topology</h4>
+            <pre><code>     ┌─────────────┐
+     │   Master    │ ← Writes
+     │ (Read/Write)│
+     └─────┬───────┘
+           │
+      ┌────┼────┐
+      │    │    │
+   ┌──▼─┐ ┌─▼─┐ ┌▼──┐
+   │Slv1│ │Slv2│ │Slv3│ ← Reads
+   └────┘ └───┘ └───┘</code></pre>
+
+            <h4>How Replication Works</h4>
+            <ol>
+                <li><strong>Initial Sync:</strong> Slave connects and requests full synchronization</li>
+                <li><strong>Snapshot Transfer:</strong> Master creates RDB snapshot and sends to slave</li>
+                <li><strong>Command Streaming:</strong> Master streams ongoing commands to slave</li>
+                <li><strong>Partial Resync:</strong> If connection drops, slave can resync incrementally</li>
+            </ol>
+
+            <h3>Replication vs Clustering</h3>
+            <table border="1">
+                <tr>
+                    <th>Aspect</th>
+                    <th>Replication</th>
+                    <th>Clustering</th>
+                </tr>
+                <tr>
+                    <td>Data Distribution</td>
+                    <td>Full copy on each slave</td>
+                    <td>Data partitioned across nodes</td>
+                </tr>
+                <tr>
+                    <td>Write Scaling</td>
+                    <td>Single master bottleneck</td>
+                    <td>Distributed writes</td>
+                </tr>
+                <tr>
+                    <td>Read Scaling</td>
+                    <td>Excellent</td>
+                    <td>Good</td>
+                </tr>
+                <tr>
+                    <td>Setup Complexity</td>
+                    <td>Simple</td>
+                    <td>Complex</td>
+                </tr>
+                <tr>
+                    <td>Consistency</td>
+                    <td>Eventually consistent</td>
+                    <td>Eventually consistent</td>
+                </tr>
+            </table>
+        </section>
+
+        <section>
+            <h2>Setting Up Redis Replication</h2>
+            
+            <h3>Basic Master-Slave Configuration</h3>
+            
+            <h4>Master Configuration</h4>
+            <pre><code># redis-master.conf
+
+# Basic settings
+port 6379
+bind 0.0.0.0  # Allow external connections
+protected-mode no  # For internal network, use authentication instead
+
+# Authentication (highly recommended)
+requirepass master_password
+
+# Replication settings
+masterauth master_password  # In case this becomes a slave
+
+# Persistence for replication
+save 900 1
+save 300 10
+save 60 1000
+appendonly yes
+appendfsync everysec
+
+# Memory settings
+maxmemory 2gb
+maxmemory-policy allkeys-lru
+
+# Logging
+loglevel notice
+logfile /var/log/redis/redis-master.log
+
+# Replication-specific settings
+repl-diskless-sync no  # Use disk-based replication for reliability
+repl-diskless-sync-delay 5
+repl-ping-slave-period 10
+repl-timeout 60
+repl-disable-tcp-nodelay no
+repl-backlog-size 16mb
+repl-backlog-ttl 3600
+
+# Client output buffer limits for slaves
+client-output-buffer-limit slave 256mb 64mb 60</code></pre>
+
+            <h4>Slave Configuration</h4>
+            <pre><code># redis-slave.conf
+
+# Basic settings
+port 6379
+bind 0.0.0.0
+
+# Slave-specific settings
+replicaof 192.168.1.100 6379  # Master IP and port
+masterauth master_password     # Master password
+
+# Local authentication
+requirepass slave_password
+
+# Read-only enforcement (default, but explicit is better)
+replica-read-only yes
+
+# Serve stale data when link with master is down
+replica-serve-stale-data yes
+
+# Priority for Sentinel (lower = higher priority)
+replica-priority 100
+
+# Persistence on slave (recommended for backup)
+save 900 1
+save 300 10
+save 60 1000
+appendonly yes
+appendfsync everysec
+
+# Memory settings
+maxmemory 2gb
+maxmemory-policy allkeys-lru
+
+# Logging
+loglevel notice
+logfile /var/log/redis/redis-slave.log
+
+# Replication settings
+repl-ping-slave-period 10
+repl-timeout 60
+repl-disable-tcp-nodelay no
+
+# Client buffer limits
+client-output-buffer-limit slave 256mb 64mb 60</code></pre>
+
+            <h3>Starting Replication</h3>
+            
+            <h4>Method 1: Configuration File</h4>
+            <pre><code># Start master
+redis-server /etc/redis/redis-master.conf
+
+# Start slave
+redis-server /etc/redis/redis-slave.conf
+
+# Verify replication
+redis-cli -h master_ip -p 6379 -a master_password INFO replication
+redis-cli -h slave_ip -p 6379 -a slave_password INFO replication</code></pre>
+
+            <h4>Method 2: Runtime Configuration</h4>
+            <pre><code># Connect to would-be slave
+redis-cli -h slave_ip -p 6379
+
+# Configure replication at runtime
+REPLICAOF 192.168.1.100 6379
+CONFIG SET masterauth master_password
+
+# Verify replication status
+INFO replication
+
+# To stop being a slave
+REPLICAOF NO ONE</code></pre>
+
+            <h3>Verifying Replication</h3>
+            
+            <h4>Master Status Check</h4>
+            <pre><code># Check master replication info
+redis-cli -h master_ip -a master_password INFO replication
+
+# Expected output:
+# role:master
+# connected_slaves:2
+# slave0:ip=192.168.1.101,port=6379,state=online,offset=1234567,lag=0
+# slave1:ip=192.168.1.102,port=6379,state=online,offset=1234567,lag=1
+# master_replid:a1b2c3d4e5f6...
+# master_repl_offset:1234567</code></pre>
+
+            <h4>Slave Status Check</h4>
+            <pre><code># Check slave replication info
+redis-cli -h slave_ip -a slave_password INFO replication
+
+# Expected output:
+# role:slave
+# master_host:192.168.1.100
+# master_port:6379
+# master_link_status:up
+# master_last_io_seconds_ago:0
+# master_sync_in_progress:0
+# slave_repl_offset:1234567
+# slave_priority:100
+# slave_read_only:1</code></pre>
+
+            <h4>Testing Replication</h4>
+            <pre><code># Test data replication
+# On master:
+redis-cli -h master_ip -a master_password SET test_key "Hello Replication"
+
+# On slave:
+redis-cli -h slave_ip -a slave_password GET test_key
+# Should return: "Hello Replication"
+
+# Test read-only enforcement on slave:
+redis-cli -h slave_ip -a slave_password SET readonly_test "fail"
+# Should return: (error) READONLY You can't write against a read only replica</code></pre>
+        </section>
+
+        <section>
+            <h2>Redis Sentinel: Automatic Failover</h2>
+            
+            <h3>What is Redis Sentinel?</h3>
+            <p>Redis Sentinel provides high availability for Redis through:</p>
+            <ul>
+                <li><strong>Monitoring:</strong> Continuously monitors master and slave instances</li>
+                <li><strong>Notification:</strong> Alerts administrators about failures</li>
+                <li><strong>Automatic Failover:</strong> Promotes slave to master when needed</li>
+                <li><strong>Configuration Provider:</strong> Provides service discovery for clients</li>
+            </ul>
+
+            <h3>Sentinel Architecture</h3>
+            <pre><code>     ┌─────────────┐
+     │   Sentinel1 │
+     └─────┬───────┘
+           │
+     ┌─────▼───────┐    ┌─────────────┐
+     │   Master    │◄───┤   Sentinel2 │
+     │ (monitored) │    └─────────────┘
+     └─────┬───────┘
+           │              ┌─────────────┐
+      ┌────┼────┐        │   Sentinel3 │
+      │    │    │        └─────────────┘
+   ┌──▼─┐ ┌─▼─┐ ┌▼──┐
+   │Slv1│ │Slv2│ │Slv3│
+   └────┘ └───┘ └───┘</code></pre>
+
+            <h3>Sentinel Configuration</h3>
+            
+            <h4>Basic Sentinel Configuration</h4>
+            <pre><code># sentinel.conf
+
+# Sentinel instance settings
+port 26379
+bind 0.0.0.0
+
+# Authentication
+# requirepass sentinel_password
+
+# Monitor master instance
+sentinel monitor mymaster 192.168.1.100 6379 2
+sentinel auth-pass mymaster master_password
+
+# Timeouts and thresholds
+sentinel down-after-milliseconds mymaster 5000
+sentinel failover-timeout mymaster 60000
+sentinel parallel-syncs mymaster 1
+
+# Notification scripts (optional)
+# sentinel notification-script mymaster /var/redis/notify.sh
+# sentinel client-reconfig-script mymaster /var/redis/reconfig.sh
+
+# Logging
+logfile /var/log/redis/sentinel.log
+loglevel notice
+
+# Working directory
+dir /var/lib/redis</code></pre>
+
+            <h4>Sentinel Configuration Parameters Explained</h4>
+            <table border="1">
+                <tr>
+                    <th>Parameter</th>
+                    <th>Description</th>
+                    <th>Recommended Value</th>
+                </tr>
+                <tr>
+                    <td>quorum</td>
+                    <td>Minimum Sentinels needed to agree on failure</td>
+                    <td>majority (2 for 3 sentinels)</td>
+                </tr>
+                <tr>
+                    <td>down-after-milliseconds</td>
+                    <td>Time before marking instance as down</td>
+                    <td>5000-30000ms</td>
+                </tr>
+                <tr>
+                    <td>failover-timeout</td>
+                    <td>Maximum time for failover process</td>
+                    <td>60000-180000ms</td>
+                </tr>
+                <tr>
+                    <td>parallel-syncs</td>
+                    <td>How many slaves sync simultaneously</td>
+                    <td>1 (to avoid overload)</td>
+                </tr>
+            </table>
+
+            <h3>Deploying Sentinel Cluster</h3>
+            
+            <h4>Multi-Server Sentinel Setup</h4>
+            <pre><code># Sentinel 1 (192.168.1.201)
+# sentinel-1.conf
+port 26379
+sentinel monitor mymaster 192.168.1.100 6379 2
+sentinel auth-pass mymaster master_password
+sentinel down-after-milliseconds mymaster 5000
+sentinel failover-timeout mymaster 60000
+sentinel parallel-syncs mymaster 1
+
+# Sentinel 2 (192.168.1.202)
+# sentinel-2.conf
+port 26379
+sentinel monitor mymaster 192.168.1.100 6379 2
+sentinel auth-pass mymaster master_password
+sentinel down-after-milliseconds mymaster 5000
+sentinel failover-timeout mymaster 60000
+sentinel parallel-syncs mymaster 1
+
+# Sentinel 3 (192.168.1.203)
+# sentinel-3.conf
+port 26379
+sentinel monitor mymaster 192.168.1.100 6379 2
+sentinel auth-pass mymaster master_password
+sentinel down-after-milliseconds mymaster 5000
+sentinel failover-timeout mymaster 60000
+sentinel parallel-syncs mymaster 1</code></pre>
+
+            <h4>Starting Sentinel Instances</h4>
+            <pre><code># Start Sentinel instances
+redis-sentinel /etc/redis/sentinel-1.conf
+redis-sentinel /etc/redis/sentinel-2.conf  
+redis-sentinel /etc/redis/sentinel-3.conf
+
+# Or using redis-server with --sentinel flag
+redis-server /etc/redis/sentinel-1.conf --sentinel
+
+# Check Sentinel status
+redis-cli -p 26379 SENTINEL masters
+redis-cli -p 26379 SENTINEL slaves mymaster
+redis-cli -p 26379 SENTINEL sentinels mymaster</code></pre>
+        </section>
+
+        <section>
+            <h2>Monitoring and Management</h2>
+            
+            <h3>Sentinel Commands</h3>
+            
+            <h4>Basic Monitoring Commands</h4>
+            <pre><code># Connect to Sentinel
+redis-cli -h sentinel_ip -p 26379
+
+# Get monitored masters
+SENTINEL masters
+
+# Get slaves for a master
+SENTINEL slaves mymaster
+
+# Get other sentinels
+SENTINEL sentinels mymaster
+
+# Get master address
+SENTINEL get-master-addr-by-name mymaster
+
+# Check if master is down
+SENTINEL ckquorum mymaster
+
+# Reset master (clear state)
+SENTINEL reset mymaster</code></pre>
+
+            <h4>Sentinel Information Commands</h4>
+            <pre><code># Get detailed master info
+SENTINEL master mymaster
+
+# Monitor master events
+SENTINEL monitor mymaster 192.168.1.100 6379 2
+
+# Remove monitoring
+SENTINEL remove mymaster
+
+# Change configuration
+SENTINEL set mymaster down-after-milliseconds 10000
+SENTINEL set mymaster failover-timeout 120000
+SENTINEL set mymaster parallel-syncs 2</code></pre>
+
+            <h3>Monitoring Script</h3>
+            
+            <h4>Comprehensive Monitoring Script</h4>
+            <pre><code>#!/bin/bash
+# Redis Sentinel monitoring script
+
+SENTINEL_HOSTS=("192.168.1.201" "192.168.1.202" "192.168.1.203")
+SENTINEL_PORT="26379"
+MASTER_NAME="mymaster"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+}
+
+check_sentinel() {
+    local host=$1
+    local port=$2
+    
+    if redis-cli -h $host -p $port ping >/dev/null 2>&1; then
+        log "Sentinel $host:$port is responsive"
+        return 0
+    else
+        log "ERROR: Sentinel $host:$port is not responsive"
+        return 1
+    fi
+}
+
+check_master_status() {
+    local sentinel_host=$1
+    local sentinel_port=$2
+    local master_name=$3
+    
+    local master_info=$(redis-cli -h $sentinel_host -p $sentinel_port SENTINEL get-master-addr-by-name $master_name)
+    
+    if [ $? -eq 0 ]; then
+        local master_ip=$(echo $master_info | cut -d' ' -f1)
+        local master_port=$(echo $master_info | cut -d' ' -f2)
+        log "Current master: $master_ip:$master_port"
+        
+        # Test master connectivity
+        if redis-cli -h $master_ip -p $master_port ping >/dev/null 2>&1; then
+            log "Master $master_ip:$master_port is responsive"
+            return 0
+        else
+            log "WARNING: Master $master_ip:$master_port is not responsive"
+            return 1
+        fi
+    else
+        log "ERROR: Could not get master address from Sentinel"
+        return 1
+    fi
+}
+
+check_slaves() {
+    local sentinel_host=$1
+    local sentinel_port=$2
+    local master_name=$3
+    
+    local slaves_info=$(redis-cli -h $sentinel_host -p $sentinel_port SENTINEL slaves $master_name)
+    local slave_count=$(echo "$slaves_info" | grep -c "ip")
+    
+    log "Number of slaves: $slave_count"
+    
+    # Parse and check each slave
+    echo "$slaves_info" | grep -E "(ip|port|flags)" | while read line; do
+        if [[ $line == *"ip"* ]]; then
+            slave_ip=$(echo $line | cut -d',' -f1 | cut -d'=' -f2)
+        elif [[ $line == *"port"* ]]; then
+            slave_port=$(echo $line | cut -d',' -f1 | cut -d'=' -f2)
+        elif [[ $line == *"flags"* ]]; then
+            flags=$(echo $line | cut -d',' -f1 | cut -d'=' -f2)
+            log "Slave $slave_ip:$slave_port status: $flags"
+        fi
+    done
+}
+
+main() {
+    log "Starting Redis Sentinel monitoring"
+    
+    # Check all Sentinel instances
+    local active_sentinels=0
+    for host in "${SENTINEL_HOSTS[@]}"; do
+        if check_sentinel $host $SENTINEL_PORT; then
+            active_sentinels=$((active_sentinels + 1))
+            
+            # Use first responsive Sentinel for master checks
+            if [ $active_sentinels -eq 1 ]; then
+                check_master_status $host $SENTINEL_PORT $MASTER_NAME
+                check_slaves $host $SENTINEL_PORT $MASTER_NAME
+            fi
+        fi
+    done
+    
+    # Alert if not enough Sentinels are active
+    if [ $active_sentinels -lt 2 ]; then
+        log "CRITICAL: Only $active_sentinels Sentinels are active (need at least 2)"
+    else
+        log "OK: $active_sentinels Sentinels are active"
+    fi
+    
+    log "Monitoring check completed"
+}
+
+main</code></pre>
+
+            <h3>Health Check Script</h3>
+            <pre><code>#!/bin/bash
+# Redis replication health check
+
+check_replication_lag() {
+    local master_host=$1
+    local master_port=$2
+    local master_auth=$3
+    
+    log "Checking replication lag"
+    
+    # Get master offset
+    local master_offset=$(redis-cli -h $master_host -p $master_port -a $master_auth INFO replication | grep master_repl_offset | cut -d: -f2 | tr -d '\r')
+    
+    # Get slaves and their offsets
+    local slaves_info=$(redis-cli -h $master_host -p $master_port -a $master_auth INFO replication | grep slave)
+    
+    echo "$slaves_info" | while read line; do
+        if [[ $line == slave* ]]; then
+            local slave_ip=$(echo $line | grep -o 'ip=[^,]*' | cut -d'=' -f2)
+            local slave_offset=$(echo $line | grep -o 'offset=[^,]*' | cut -d'=' -f2)
+            local lag=$(echo $line | grep -o 'lag=[^,]*' | cut -d'=' -f2)
+            
+            local offset_diff=$((master_offset - slave_offset))
+            
+            log "Slave $slave_ip: offset_diff=$offset_diff, lag=${lag}s"
+            
+            if [ $offset_diff -gt 1000 ]; then
+                log "WARNING: Slave $slave_ip has high replication lag: $offset_diff bytes"
+            fi
+            
+            if [ $lag -gt 10 ]; then
+                log "WARNING: Slave $slave_ip has high time lag: ${lag}s"
+            fi
+        fi
+    done
+}
+
+# Usage
+check_replication_lag "192.168.1.100" "6379" "master_password"</code></pre>
+        </section>
+
+        <section>
+            <h2>Handling Failover</h2>
+            
+            <h3>Automatic Failover Process</h3>
+            
+            <h4>Failover Steps</h4>
+            <ol>
+                <li><strong>Detection:</strong> Sentinels detect master is down</li>
+                <li><strong>Quorum Agreement:</strong> Required number of Sentinels agree</li>
+                <li><strong>Leader Election:</strong> One Sentinel becomes failover leader</li>
+                <li><strong>Slave Selection:</strong> Best slave is chosen as new master</li>
+                <li><strong>Promotion:</strong> Selected slave becomes master</li>
+                <li><strong>Reconfiguration:</strong> Other slaves point to new master</li>
+                <li><strong>Notification:</strong> Clients are notified of new master</li>
+            </ol>
+
+            <h4>Slave Selection Criteria</h4>
+            <table border="1">
+                <tr>
+                    <th>Priority</th>
+                    <th>Criteria</th>
+                    <th>Description</th>
+                </tr>
+                <tr>
+                    <td>1</td>
+                    <td>replica-priority</td>
+                    <td>Lower number = higher priority (0 = never promote)</td>
+                </tr>
+                <tr>
+                    <td>2</td>
+                    <td>Replication offset</td>
+                    <td>Slave with highest offset (most up-to-date)</td>
+                </tr>
+                <tr>
+                    <td>3</td>
+                    <td>Run ID</td>
+                    <td>Lexicographically smaller run ID (tie-breaker)</td>
+                </tr>
+            </table>
+
+            <h3>Manual Failover</h3>
+            
+            <h4>Planned Failover</h4>
+            <pre><code># Trigger manual failover
+redis-cli -p 26379 SENTINEL failover mymaster
+
+# Check failover progress
+redis-cli -p 26379 SENTINEL masters
+
+# Verify new master
+redis-cli -p 26379 SENTINEL get-master-addr-by-name mymaster</code></pre>
+
+            <h4>Emergency Procedures</h4>
+            <pre><code># If Sentinel is not working, manual promotion:
+
+# 1. Stop the failed master (if accessible)
+redis-cli -h old_master SHUTDOWN
+
+# 2. Promote a slave manually
+redis-cli -h best_slave REPLICAOF NO ONE
+
+# 3. Update other slaves
+redis-cli -h slave2 REPLICAOF new_master_ip 6379
+redis-cli -h slave3 REPLICAOF new_master_ip 6379
+
+# 4. Update application configuration
+# Point applications to new master
+
+# 5. Update Sentinel configuration (if needed)
+redis-cli -p 26379 SENTINEL reset mymaster</code></pre>
+
+            <h3>Client-Side Failover Handling</h3>
+            
+            <h4>Python Client Example</h4>
+            <pre><code>import redis.sentinel
+import time
+import logging
+
+# Sentinel configuration
+sentinels = [
+    ('192.168.1.201', 26379),
+    ('192.168.1.202', 26379),
+    ('192.168.1.203', 26379)
+]
+
+# Create Sentinel instance
+sentinel = redis.sentinel.Sentinel(sentinels, socket_timeout=0.1)
+
+def get_redis_connection():
+    """Get Redis connection with automatic failover"""
+    try:
+        # Discover current master
+        master = sentinel.master_for('mymaster', 
+                                   socket_timeout=0.1,
+                                   password='master_password')
+        return master
+    except Exception as e:
+        logging.error(f"Failed to connect to Redis master: {e}")
+        return None
+
+def get_redis_read_connection():
+    """Get Redis slave connection for reads"""
+    try:
+        slave = sentinel.slave_for('mymaster',
+                                 socket_timeout=0.1, 
+                                 password='slave_password')
+        return slave
+    except Exception as e:
+        logging.error(f"Failed to connect to Redis slave: {e}")
+        return None
+
+# Usage example with retry logic
+def redis_operation_with_retry(operation, *args, **kwargs):
+    """Perform Redis operation with automatic retry on failover"""
+    max_retries = 3
+    retry_delay = 1
+    
+    for attempt in range(max_retries):
+        try:
+            redis_client = get_redis_connection()
+            if redis_client:
+                return operation(redis_client, *args, **kwargs)
+        except redis.ConnectionError as e:
+            logging.warning(f"Redis connection error (attempt {attempt + 1}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+        except Exception as e:
+            logging.error(f"Redis operation error: {e}")
+            break
+    
+    raise Exception("Failed to perform Redis operation after retries")
+
+# Example operations
+def set_value(key, value):
+    def _set_operation(client, k, v):
+        return client.set(k, v)
+    return redis_operation_with_retry(_set_operation, key, value)
+
+def get_value(key):
+    def _get_operation(client, k):
+        return client.get(k)
+    return redis_operation_with_retry(_get_operation, key)</code></pre>
+
+            <h4>Java Client Example</h4>
+            <pre><code>import redis.clients.jedis.Jedis;
+import redis.clients.jedis.JedisSentinelPool;
+import java.util.HashSet;
+import java.util.Set;
+
+public class RedisSentinelClient {
+    private JedisSentinelPool sentinelPool;
+    
+    public RedisSentinelClient() {
+        Set<String> sentinels = new HashSet<>();
+        sentinels.add("192.168.1.201:26379");
+        sentinels.add("192.168.1.202:26379");
+        sentinels.add("192.168.1.203:26379");
+        
+        sentinelPool = new JedisSentinelPool("mymaster", sentinels, "password");
+    }
+    
+    public void setValue(String key, String value) {
+        try (Jedis jedis = sentinelPool.getResource()) {
+            jedis.set(key, value);
+        }
+    }
+    
+    public String getValue(String key) {
+        try (Jedis jedis = sentinelPool.getResource()) {
+            return jedis.get(key);
+        }
+    }
+    
+    public void close() {
+        sentinelPool.close();
+    }
+}</code></pre>
+        </section>
+
+        <section>
+            <h2>Production Deployment Strategies</h2>
+            
+            <h3>Network Topology Considerations</h3>
+            
+            <h4>Single Data Center Deployment</h4>
+            <pre><code># Recommended layout for single DC:
+# - 1 Master + 2 Slaves on different physical servers
+# - 3 Sentinels on separate servers (can be shared with apps)
+# - Load balancer for read operations
+
+Data Center A:
+├── Server 1: Redis Master + App Server
+├── Server 2: Redis Slave + App Server + Sentinel
+├── Server 3: Redis Slave + App Server + Sentinel  
+└── Server 4: Monitoring + Sentinel</code></pre>
+
+            <h4>Multi-Data Center Deployment</h4>
+            <pre><code># Cross-DC deployment for disaster recovery:
+
+Primary DC (Active):
+├── Redis Master
+├── Redis Slave  
+└── 2 Sentinels
+
+Secondary DC (Standby):
+├── Redis Slave (async replication)
+└── 1 Sentinel
+
+# In case of DC failure:
+# 1. Promote slave in secondary DC
+# 2. Update DNS/load balancer
+# 3. Restart applications with new Redis endpoint</code></pre>
+
+            <h3>Hardware and Resource Planning</h3>
+            
+            <h4>Sizing Guidelines</h4>
+            <table border="1">
+                <tr>
+                    <th>Component</th>
+                    <th>Small Setup</th>
+                    <th>Medium Setup</th>
+                    <th>Large Setup</th>
+                </tr>
+                <tr>
+                    <td>Master CPU</td>
+                    <td>2-4 cores</td>
+                    <td>4-8 cores</td>
+                    <td>8-16 cores</td>
+                </tr>
+                <tr>
+                    <td>Master RAM</td>
+                    <td>4-8 GB</td>
+                    <td>16-32 GB</td>
+                    <td>64-128 GB</td>
+                </tr>
+                <tr>
+                    <td>Slave Resources</td>
+                    <td>Same as master</td>
+                    <td>Same as master</td>
+                    <td>Same as master</td>
+                </tr>
+                <tr>
+                    <td>Sentinel Resources</td>
+                    <td>1 core, 512MB</td>
+                    <td>1 core, 1GB</td>
+                    <td>2 cores, 2GB</td>
+                </tr>
+                <tr>
+                    <td>Network</td>
+                    <td>1 Gbps</td>
+                    <td>10 Gbps</td>
+                    <td>10+ Gbps</td>
+                </tr>
+            </table>
+
+            <h3>Security Configuration</h3>
+            
+            <h4>Secure Replication Setup</h4>
+            <pre><code># Master security configuration
+requirepass strong_master_password
+masterauth strong_master_password
+
+# Slave security
+requirepass strong_slave_password
+masterauth strong_master_password
+
+# Sentinel security
+requirepass strong_sentinel_password
+
+# Network security
+bind 10.0.0.0/8  # Bind to internal network only
+protected-mode yes
+
+# TLS encryption (Redis 6+)
+tls-port 6380
+port 0  # Disable non-TLS port
+tls-cert-file /etc/redis/redis.crt
+tls-key-file /etc/redis/redis.key
+tls-ca-cert-file /etc/redis/ca.crt</code></pre>
+
+            <h4>Firewall Rules</h4>
+            <pre><code># Redis Master/Slave ports
+iptables -A INPUT -p tcp --dport 6379 -s 10.0.0.0/8 -j ACCEPT
+
+# Sentinel ports  
+iptables -A INPUT -p tcp --dport 26379 -s 10.0.0.0/8 -j ACCEPT
+
+# Block external access
+iptables -A INPUT -p tcp --dport 6379 -j DROP
+iptables -A INPUT -p tcp --dport 26379 -j DROP</code></pre>
+
+            <h3>Monitoring and Alerting Setup</h3>
+            
+            <h4>Prometheus Monitoring</h4>
+            <pre><code># prometheus.yml configuration
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'redis'
+    static_configs:
+      - targets: 
+        - '192.168.1.100:9121'  # redis_exporter on master
+        - '192.168.1.101:9121'  # redis_exporter on slave1
+        - '192.168.1.102:9121'  # redis_exporter on slave2
+    
+  - job_name: 'redis-sentinel'
+    static_configs:
+      - targets:
+        - '192.168.1.201:9355'  # sentinel_exporter
+        - '192.168.1.202:9355'
+        - '192.168.1.203:9355'</code></pre>
+
+            <h4>Alert Rules</h4>
+            <pre><code># redis_alerts.yml
+groups:
+- name: redis
+  rules:
+  - alert: RedisDown
+    expr: redis_up == 0
+    for: 5m
+    labels:
+      severity: critical
+    annotations:
+      summary: "Redis instance is down"
+      
+  - alert: RedisReplicationLag
+    expr: redis_replication_lag_seconds > 10
+    for: 2m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Redis replication lag is high"
+      
+  - alert: RedisMasterSwitched
+    expr: changes(redis_master_repl_offset[5m]) == 0 and redis_up == 1
+    for: 1m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Redis master may have switched"</code></pre>
+        </section>
+
+        <section>
+            <h2>Best Practices and Optimization</h2>
+            
+            <h3>Replication Best Practices</h3>
+            
+            <h4>Configuration Optimization</h4>
+            <pre><code># Optimize for replication performance
+
+# Use diskless replication for fast networks
+repl-diskless-sync yes
+repl-diskless-sync-delay 5
+
+# Optimize buffer sizes
+repl-backlog-size 64mb  # Larger for high-write workloads
+repl-backlog-ttl 3600   # Keep for 1 hour
+
+# Client output buffer for slaves
+client-output-buffer-limit slave 512mb 128mb 60
+
+# TCP settings for replication
+repl-disable-tcp-nodelay no  # Better for LANs
+tcp-keepalive 60</code></pre>
+
+            <h4>Monitoring Key Metrics</h4>
+            <table border="1">
+                <tr>
+                    <th>Metric</th>
+                    <th>Description</th>
+                    <th>Warning Threshold</th>
+                    <th>Critical Threshold</th>
+                </tr>
+                <tr>
+                    <td>master_link_status</td>
+                    <td>Slave connection to master</td>
+                    <td>down for 30s</td>
+                    <td>down for 60s</td>
+                </tr>
+                <tr>
+                    <td>master_last_io_seconds_ago</td>
+                    <td>Time since last master communication</td>
+                    <td>30 seconds</td>
+                    <td>60 seconds</td>
+                </tr>
+                <tr>
+                    <td>repl_backlog_active</td>
+                    <td>Is replication backlog active</td>
+                    <td>0 (inactive)</td>
+                    <td>-</td>
+                </tr>
+                <tr>
+                    <td>connected_slaves</td>
+                    <td>Number of connected slaves</td>
+                    <td>< expected count</td>
+                    <td>0</td>
+                </tr>
+            </table>
+
+            <h3>Sentinel Best Practices</h3>
+            
+            <h4>Deployment Guidelines</h4>
+            <ul>
+                <li><strong>Odd number:</strong> Always deploy odd number of Sentinels (3, 5, 7)</li>
+                <li><strong>Separate servers:</strong> Place Sentinels on different physical servers</li>
+                <li><strong>Network diversity:</strong> Use different network paths if possible</li>
+                <li><strong>Resource isolation:</strong> Don't run Sentinel on Redis data nodes</li>
+                <li><strong>Quorum sizing:</strong> Set quorum to majority (e.g., 2 for 3 Sentinels)</li>
+            </ul>
+
+            <h4>Common Pitfalls to Avoid</h4>
+            <ul>
+                <li><strong>Single point of failure:</strong> Don't put all Sentinels in same rack/DC</li>
+                <li><strong>Wrong quorum:</strong> Too low (false positives) or too high (no failover)</li>
+                <li><strong>Network partitions:</strong> Test behavior during network splits</li>
+                <li><strong>Clock sync:</strong> Ensure time synchronization across servers</li>
+                <li><strong>Resource starvation:</strong> Monitor Sentinel resource usage</li>
+            </ul>
+
+            <h3>Testing and Validation</h3>
+            
+            <h4>Disaster Recovery Testing</h4>
+            <pre><code>#!/bin/bash
+# Comprehensive DR test script
+
+DR_TEST_LOG="/tmp/redis_dr_test_$(date +%Y%m%d_%H%M%S).log"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a $DR_TEST_LOG
+}
+
+test_master_failure() {
+    log "=== Testing Master Failure Scenario ==="
+    
+    # Record current master
+    local current_master=$(redis-cli -p 26379 SENTINEL get-master-addr-by-name mymaster)
+    log "Current master: $current_master"
+    
+    # Simulate master failure
+    local master_ip=$(echo $current_master | cut -d' ' -f1)
+    log "Stopping master at $master_ip"
+    ssh redis@$master_ip "sudo systemctl stop redis-server"
+    
+    # Wait for failover
+    log "Waiting for automatic failover..."
+    sleep 30
+    
+    # Check new master
+    local new_master=$(redis-cli -p 26379 SENTINEL get-master-addr-by-name mymaster)
+    log "New master: $new_master"
+    
+    if [ "$current_master" != "$new_master" ]; then
+        log "SUCCESS: Failover completed successfully"
+        
+        # Test write to new master
+        local new_master_ip=$(echo $new_master | cut -d' ' -f1)
+        if redis-cli -h $new_master_ip SET test_key "failover_test_$(date +%s)" >/dev/null; then
+            log "SUCCESS: Can write to new master"
+        else
+            log "FAIL: Cannot write to new master"
+        fi
+    else
+        log "FAIL: Failover did not occur"
+    fi
+    
+    # Restart old master as slave
+    log "Restarting old master as slave"
+    ssh redis@$master_ip "sudo systemctl start redis-server"
+    sleep 10
+    
+    log "=== Master Failure Test Complete ==="
+}
+
+test_slave_failure() {
+    log "=== Testing Slave Failure Scenario ==="
+    
+    # Get slave list
+    local slaves=$(redis-cli -p 26379 SENTINEL slaves mymaster | grep -o 'ip=[^,]*' | cut -d'=' -f2)
+    local first_slave=$(echo $slaves | head -1)
+    
+    log "Stopping slave at $first_slave"
+    ssh redis@$first_slave "sudo systemctl stop redis-server"
+    
+    # Wait and check
+    sleep 10
+    local remaining_slaves=$(redis-cli -p 26379 SENTINEL slaves mymaster | grep -c "flags=slave")
+    log "Remaining slaves: $remaining_slaves"
+    
+    # Restart slave
+    log "Restarting slave"
+    ssh redis@$first_slave "sudo systemctl start redis-server"
+    sleep 10
+    
+    log "=== Slave Failure Test Complete ==="
+}
+
+test_sentinel_failure() {
+    log "=== Testing Sentinel Failure Scenario ==="
+    
+    # Stop one Sentinel
+    log "Stopping one Sentinel instance"
+    ssh redis@192.168.1.201 "sudo systemctl stop redis-sentinel"
+    
+    # Check remaining Sentinels can still function
+    local active_sentinels=$(redis-cli -p 26379 SENTINEL sentinels mymaster | grep -c "flags=sentinel")
+    log "Active Sentinels: $active_sentinels"
+    
+    if [ $active_sentinels -ge 2 ]; then
+        log "SUCCESS: Remaining Sentinels are operational"
+    else
+        log "FAIL: Not enough active Sentinels"
+    fi
+    
+    # Restart Sentinel
+    log "Restarting Sentinel"
+    ssh redis@192.168.1.201 "sudo systemctl start redis-sentinel"
+    
+    log "=== Sentinel Failure Test Complete ==="
+}
+
+# Run all tests
+log "Starting Redis DR Test Suite"
+test_master_failure
+test_slave_failure  
+test_sentinel_failure
+log "DR Test Suite Complete - Check $DR_TEST_LOG for details"</code></pre>
+        </section>
+
+        <section>
+            <h2>Troubleshooting Common Issues</h2>
+            
+            <h3>Replication Issues</h3>
+            
+            <h4>Slave Cannot Connect to Master</h4>
+            <pre><code># Check network connectivity
+telnet master_ip 6379
+
+# Check authentication
+redis-cli -h master_ip -a master_password ping
+
+# Check master logs
+tail -f /var/log/redis/redis-master.log
+
+# Check slave logs
+tail -f /var/log/redis/redis-slave.log
+
+# Common issues:
+# 1. Firewall blocking port 6379
+# 2. Wrong password in masterauth
+# 3. Master not binding to external interface
+# 4. Network routing issues</code></pre>
+
+            <h4>High Replication Lag</h4>
+            <pre><code># Check replication status
+INFO replication
+
+# Monitor network throughput
+iftop -i eth0
+
+# Check disk I/O on master
+iostat -x 1
+
+# Optimize settings for high lag:
+CONFIG SET repl-diskless-sync yes
+CONFIG SET client-output-buffer-limit "slave 512mb 128mb 60"
+CONFIG SET repl-backlog-size 128mb</code></pre>
+
+            <h3>Sentinel Issues</h3>
+            
+            <h4>Split Brain Scenarios</h4>
+            <pre><code># Check Sentinel agreement
+redis-cli -p 26379 SENTINEL ckquorum mymaster
+
+# Check all Sentinels see same master
+for sentinel in 192.168.1.201 192.168.1.202 192.168.1.203; do
+    echo "Sentinel $sentinel:"
+    redis-cli -h $sentinel -p 26379 SENTINEL get-master-addr-by-name mymaster
+done
+
+# If disagreement found:
+# 1. Check network connectivity between Sentinels
+# 2. Verify time synchronization
+# 3. Reset Sentinel state if needed:
+redis-cli -p 26379 SENTINEL reset mymaster</code></pre>
+
+            <h4>Failover Not Happening</h4>
+            <pre><code># Check Sentinel status
+redis-cli -p 26379 SENTINEL masters
+
+# Verify quorum settings
+redis-cli -p 26379 SENTINEL master mymaster | grep quorum
+
+# Check down-after-milliseconds
+redis-cli -p 26379 SENTINEL master mymaster | grep down-after-milliseconds
+
+# Manual failover trigger
+redis-cli -p 26379 SENTINEL failover mymaster
+
+# Check Sentinel logs
+tail -f /var/log/redis/sentinel.log</code></pre>
+        </section>
+
+        <section>
+            <h2>Next Steps</h2>
+            <p>With Redis replication and high availability mastered, you now have the foundation for building resilient, production-ready Redis deployments. In the next posts of this series, we'll explore:</p>
+            <ul>
+                <li><strong>Scaling with Redis Clustering:</strong> Horizontal scaling and data distribution across multiple nodes</li>
+                <li><strong>Real-time Messaging with Pub/Sub:</strong> Building event-driven applications and real-time features</li>
+                <li><strong>Advanced Redis Features:</strong> Transactions, Lua scripting, and Redis modules</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Key Takeaways</h2>
+            <ul>
+                <li>Redis replication provides high availability and read scaling capabilities</li>
+                <li>Master-slave replication is asynchronous and eventually consistent</li>
+                <li>Redis Sentinel enables automatic failover and service discovery</li>
+                <li>Always deploy an odd number of Sentinels across different servers</li>
+                <li>Set quorum to majority to prevent split-brain scenarios</li>
+                <li>Clients should use Sentinel-aware libraries for automatic failover</li>
+                <li>Monitor replication lag and master-slave connectivity continuously</li>
+                <li>Test disaster recovery procedures regularly in non-production environments</li>
+                <li>Consider network topology and security when planning deployments</li>
+                <li>Proper resource planning ensures stable operation under load</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Practice Exercises</h2>
+            <ol>
+                <li>Set up a 3-node Redis replication cluster with Sentinel</li>
+                <li>Implement client-side failover handling in your preferred language</li>
+                <li>Create comprehensive monitoring for replication health</li>
+                <li>Test various failure scenarios (master, slave, Sentinel, network)</li>
+                <li>Optimize replication settings for your specific workload</li>
+                <li>Set up cross-data center replication for disaster recovery</li>
+                <li>Implement automated backup procedures for replicated setup</li>
+            </ol>
+        </section>
+
+        <section>
+            <h2>Further Reading</h2>
+            <ul>
+                <li><a href="https://redis.io/topics/replication">Official Redis Replication Documentation</a></li>
+                <li><a href="https://redis.io/topics/sentinel">Redis Sentinel Documentation</a></li>
+                <li><a href="https://redis.io/topics/admin">Redis Administration Guide</a></li>
+                <li><a href="https://redis.io/topics/clients">Redis Client Libraries</a></li>
+                <li><a href="https://redis.io/topics/high-availability">Redis High Availability Guide</a></li>
+                <li><a href="https://redis.io/topics/problems">Redis Common Problems</a></li>
+            </ul>
+        </section>
+    </main>
+
+    <footer>
+        <hr>
+        <p><em>This is the fifth post in our comprehensive Redis series. You now have the knowledge to implement robust replication and high availability for production Redis deployments.</em></p>
+        <p><strong>Previous:</strong> <a href="04-redis-data-persistence-strategies.html">Redis Data Persistence Strategies</a></p>
+        <p><strong>Next up:</strong> Scaling with Redis Clustering</p>
+    </footer>
+</body>
+</html>

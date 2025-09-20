@@ -1,0 +1,946 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Redis Data Structures Deep Dive: Mastering the Building Blocks</title>
+</head>
+<body>
+    <header>
+        <h1>Redis Data Structures Deep Dive: Mastering the Building Blocks</h1>
+        <p><em>Explore Redis's rich data types and learn when and how to use each one effectively</em></p>
+        <p><strong>Published:</strong> Blog Post #2 of Redis Mastery Series</p>
+    </header>
+
+    <main>
+        <section>
+            <h2>Introduction</h2>
+            <p>While many developers think of Redis as just a key-value store, it's actually much more powerful. Redis supports a rich set of data structures that go far beyond simple strings. Understanding these data structures and when to use them is crucial for building efficient, scalable applications.</p>
+            
+            <p>In this comprehensive guide, we'll explore each Redis data structure in detail, with practical examples and performance considerations. By the end, you'll know exactly which data structure to choose for any given scenario.</p>
+        </section>
+
+        <section>
+            <h2>Overview of Redis Data Structures</h2>
+            
+            <p>Redis provides seven core data structures, each optimized for specific use cases:</p>
+            
+            <ul>
+                <li><strong>Strings:</strong> The simplest data type, perfect for caching and counters</li>
+                <li><strong>Lists:</strong> Ordered collections ideal for queues and timelines</li>
+                <li><strong>Sets:</strong> Unordered collections of unique elements</li>
+                <li><strong>Sorted Sets:</strong> Sets with scores for ranking and leaderboards</li>
+                <li><strong>Hashes:</strong> Field-value pairs, like objects or records</li>
+                <li><strong>Streams:</strong> Append-only logs for real-time data processing</li>
+                <li><strong>Geospatial:</strong> Location-based data with geographic operations</li>
+            </ul>
+            
+            <p>Each data structure has specific commands, memory characteristics, and performance profiles. Let's dive deep into each one.</p>
+        </section>
+
+        <section>
+            <h2>Strings: The Foundation</h2>
+            
+            <h3>What are Redis Strings?</h3>
+            <p>Strings are the most basic Redis data type and the building block for all other structures. A Redis string can store:</p>
+            <ul>
+                <li>Text data (UTF-8 encoded)</li>
+                <li>Binary data (images, files)</li>
+                <li>Serialized objects (JSON, XML)</li>
+                <li>Numbers (for arithmetic operations)</li>
+            </ul>
+            
+            <h3>String Commands</h3>
+            
+            <h4>Basic Operations</h4>
+            <pre><code># Set and get values
+SET user:1000:name "John Doe"
+GET user:1000:name
+
+# Set with expiration (TTL in seconds)
+SETEX session:abc123 3600 "user_data"
+
+# Set only if key doesn't exist
+SETNX config:maintenance "true"
+
+# Set multiple values atomically
+MSET user:1001:name "Jane" user:1001:email "jane@example.com"
+MGET user:1001:name user:1001:email</code></pre>
+
+            <h4>Numeric Operations</h4>
+            <pre><code># Increment/decrement operations
+SET page:views 100
+INCR page:views              # Returns 101
+INCRBY page:views 10         # Returns 111
+DECR page:views              # Returns 110
+DECRBY page:views 5          # Returns 105
+
+# Float operations
+SET product:price 29.99
+INCRBYFLOAT product:price 5.01  # Returns 35.0</code></pre>
+
+            <h4>String Manipulation</h4>
+            <pre><code># Append to string
+SET message "Hello"
+APPEND message " World"      # Returns 11 (length)
+GET message                  # Returns "Hello World"
+
+# Get string length
+STRLEN message               # Returns 11
+
+# Get substring
+GETRANGE message 0 4         # Returns "Hello"
+SETRANGE message 6 "Redis"   # Replaces "World" with "Redis"</code></pre>
+
+            <h3>Common Use Cases for Strings</h3>
+            
+            <h4>Caching</h4>
+            <pre><code># Cache API responses
+SET cache:weather:london "{\"temp\":20,\"humidity\":65}" EX 1800
+
+# Cache user sessions
+SET session:user123 "logged_in" EX 3600</code></pre>
+
+            <h4>Counters and Analytics</h4>
+            <pre><code># Page view counter
+INCR page:home:views
+INCR page:about:views
+
+# Rate limiting
+SET rate_limit:user:123 1 EX 60
+INCR rate_limit:user:123</code></pre>
+
+            <h4>Feature Flags</h4>
+            <pre><code># Simple feature flags
+SET feature:new_ui "enabled"
+SET feature:beta_feature "disabled"</code></pre>
+
+            <h3>Performance Characteristics</h3>
+            <ul>
+                <li><strong>Memory:</strong> ~40 bytes overhead + data size</li>
+                <li><strong>Access time:</strong> O(1) for all operations</li>
+                <li><strong>Max size:</strong> 512MB per string</li>
+                <li><strong>Best for:</strong> Simple values, counters, caching</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Lists: Ordered Collections</h2>
+            
+            <h3>What are Redis Lists?</h3>
+            <p>Redis Lists are ordered collections of strings, implemented as linked lists. They maintain insertion order and allow duplicate elements. Lists excel at scenarios where you need to:</p>
+            <ul>
+                <li>Maintain order of elements</li>
+                <li>Add/remove elements from both ends efficiently</li>
+                <li>Implement queues, stacks, or timelines</li>
+            </ul>
+
+            <h3>List Commands</h3>
+
+            <h4>Adding Elements</h4>
+            <pre><code># Add to the left (beginning)
+LPUSH messages "Hello"
+LPUSH messages "Hi"          # List is now ["Hi", "Hello"]
+
+# Add to the right (end)
+RPUSH messages "Goodbye"     # List is now ["Hi", "Hello", "Goodbye"]
+
+# Add multiple elements
+LPUSH messages "Hey" "Howdy" # List is now ["Howdy", "Hey", "Hi", "Hello", "Goodbye"]
+
+# Insert before/after specific element
+LINSERT messages BEFORE "Hello" "Bonjour"</code></pre>
+
+            <h4>Retrieving Elements</h4>
+            <pre><code># Get elements by range (0-based indexing)
+LRANGE messages 0 -1         # Get all elements
+LRANGE messages 0 2          # Get first 3 elements
+LRANGE messages -2 -1        # Get last 2 elements
+
+# Get element by index
+LINDEX messages 0            # Get first element
+LINDEX messages -1           # Get last element
+
+# Get list length
+LLEN messages</code></pre>
+
+            <h4>Removing Elements</h4>
+            <pre><code># Remove from ends
+LPOP messages                # Remove and return first element
+RPOP messages                # Remove and return last element
+
+# Remove specific elements
+LREM messages 1 "Hello"      # Remove first occurrence of "Hello"
+LREM messages -1 "Hi"        # Remove last occurrence of "Hi"
+LREM messages 0 "Hey"        # Remove all occurrences of "Hey"
+
+# Trim list to specific range
+LTRIM messages 0 99          # Keep only first 100 elements</code></pre>
+
+            <h4>Blocking Operations</h4>
+            <pre><code># Block until element is available (useful for queues)
+BLPOP task_queue 30          # Block for 30 seconds waiting for element
+BRPOP task_queue 0           # Block indefinitely
+
+# Move element between lists atomically
+RPOPLPUSH source_list dest_list</code></pre>
+
+            <h3>Common Use Cases for Lists</h3>
+
+            <h4>Task Queues</h4>
+            <pre><code># Producer adds tasks
+LPUSH task_queue "process_payment:123"
+LPUSH task_queue "send_email:456"
+
+# Consumer processes tasks
+BRPOP task_queue 30</code></pre>
+
+            <h4>Activity Feeds</h4>
+            <pre><code># Add new activities to user feed
+LPUSH user:1000:feed "liked photo:789"
+LPUSH user:1000:feed "commented on post:456"
+
+# Get recent activities
+LRANGE user:1000:feed 0 9    # Get last 10 activities
+
+# Limit feed size
+LTRIM user:1000:feed 0 99    # Keep only last 100 activities</code></pre>
+
+            <h4>Recently Viewed Items</h4>
+            <pre><code># Add viewed product
+LPUSH user:1000:recent_products "product:123"
+LTRIM user:1000:recent_products 0 19  # Keep only last 20 items</code></pre>
+
+            <h3>Performance Characteristics</h3>
+            <ul>
+                <li><strong>Add/remove from ends:</strong> O(1)</li>
+                <li><strong>Access by index:</strong> O(N) - use sparingly</li>
+                <li><strong>Range operations:</strong> O(S+N) where S is start offset, N is number of elements</li>
+                <li><strong>Memory:</strong> ~40 bytes per element overhead</li>
+                <li><strong>Best for:</strong> Queues, activity feeds, recent items</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Sets: Unique Collections</h2>
+            
+            <h3>What are Redis Sets?</h3>
+            <p>Redis Sets are unordered collections of unique strings. Sets automatically handle uniqueness and provide powerful operations for membership testing, intersections, unions, and differences.</p>
+
+            <h3>Set Commands</h3>
+
+            <h4>Basic Operations</h4>
+            <pre><code># Add members to set
+SADD user:1000:interests "programming" "music" "travel"
+SADD user:1000:interests "programming"  # Won't add duplicate
+
+# Check membership
+SISMEMBER user:1000:interests "music"   # Returns 1 (true)
+SISMEMBER user:1000:interests "sports"  # Returns 0 (false)
+
+# Get all members
+SMEMBERS user:1000:interests
+
+# Get set size
+SCARD user:1000:interests
+
+# Remove members
+SREM user:1000:interests "travel"</code></pre>
+
+            <h4>Random Operations</h4>
+            <pre><code># Get random member(s) without removing
+SRANDMEMBER user:1000:interests
+SRANDMEMBER user:1000:interests 2
+
+# Remove and return random member(s)
+SPOP user:1000:interests
+SPOP user:1000:interests 2</code></pre>
+
+            <h4>Set Operations</h4>
+            <pre><code># Create sample sets
+SADD user:1000:interests "programming" "music" "travel"
+SADD user:2000:interests "music" "sports" "cooking"
+
+# Intersection (common elements)
+SINTER user:1000:interests user:2000:interests  # Returns "music"
+
+# Union (all unique elements)
+SUNION user:1000:interests user:2000:interests
+
+# Difference (elements in first set but not in second)
+SDIFF user:1000:interests user:2000:interests
+
+# Store results of set operations
+SINTERSTORE common_interests user:1000:interests user:2000:interests</code></pre>
+
+            <h3>Common Use Cases for Sets</h3>
+
+            <h4>Tags and Categories</h4>
+            <pre><code># Article tags
+SADD article:123:tags "redis" "database" "nosql" "caching"
+
+# Find articles with specific tag
+SISMEMBER article:123:tags "redis"
+
+# Get all tags for an article
+SMEMBERS article:123:tags</code></pre>
+
+            <h4>Social Features</h4>
+            <pre><code># User followers
+SADD user:1000:followers "user:2000" "user:3000" "user:4000"
+
+# User following
+SADD user:1000:following "user:5000" "user:6000"
+
+# Find mutual followers
+SINTER user:1000:followers user:2000:followers
+
+# Check if user follows another
+SISMEMBER user:1000:following "user:5000"</code></pre>
+
+            <h4>Unique Visitors Tracking</h4>
+            <pre><code># Track unique visitors per day
+SADD visitors:2023-12-01 "user:123" "user:456" "user:789"
+
+# Get unique visitor count
+SCARD visitors:2023-12-01
+
+# Check if user visited today
+SISMEMBER visitors:2023-12-01 "user:123"</code></pre>
+
+            <h4>Blacklists and Whitelists</h4>
+            <pre><code># IP blacklist
+SADD blacklisted_ips "192.168.1.100" "10.0.0.50"
+
+# Check if IP is blacklisted
+SISMEMBER blacklisted_ips "192.168.1.100"</code></pre>
+
+            <h3>Performance Characteristics</h3>
+            <ul>
+                <li><strong>Add/remove/membership test:</strong> O(1) average</li>
+                <li><strong>Set operations:</strong> O(N) where N is the size of the smaller set</li>
+                <li><strong>Memory:</strong> ~40 bytes per element overhead</li>
+                <li><strong>Best for:</strong> Unique collections, social graphs, filtering</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Sorted Sets: Ranked Collections</h2>
+            
+            <h3>What are Redis Sorted Sets?</h3>
+            <p>Sorted Sets (ZSets) combine the uniqueness of Sets with the ordering capability of Lists. Each element has an associated score that determines its position in the sorted order. This makes them perfect for leaderboards, rankings, and priority queues.</p>
+
+            <h3>Sorted Set Commands</h3>
+
+            <h4>Adding and Updating</h4>
+            <pre><code># Add members with scores
+ZADD leaderboard 100 "player1" 200 "player2" 150 "player3"
+
+# Update scores (add to existing score)
+ZINCRBY leaderboard 50 "player1"  # player1 now has score 150
+
+# Add only if member doesn't exist
+ZADD leaderboard NX 300 "player4"
+
+# Add only if member exists (update only)
+ZADD leaderboard XX 250 "player2"</code></pre>
+
+            <h4>Retrieving by Rank</h4>
+            <pre><code># Get members by rank (0-based, lowest to highest score)
+ZRANGE leaderboard 0 -1          # All members, ascending
+ZRANGE leaderboard 0 2           # Top 3 by rank (lowest scores)
+
+# Get members with scores
+ZRANGE leaderboard 0 -1 WITHSCORES
+
+# Reverse order (highest to lowest score)
+ZREVRANGE leaderboard 0 2        # Top 3 highest scores
+ZREVRANGE leaderboard 0 -1 WITHSCORES</code></pre>
+
+            <h4>Retrieving by Score</h4>
+            <pre><code># Get members by score range
+ZRANGEBYSCORE leaderboard 100 200
+ZRANGEBYSCORE leaderboard 100 200 WITHSCORES
+
+# Use infinity for open ranges
+ZRANGEBYSCORE leaderboard 100 +inf
+ZRANGEBYSCORE leaderboard -inf 200
+
+# Limit results
+ZRANGEBYSCORE leaderboard 100 200 LIMIT 0 10</code></pre>
+
+            <h4>Information and Removal</h4>
+            <pre><code># Get member's score
+ZSCORE leaderboard "player1"
+
+# Get member's rank (0-based)
+ZRANK leaderboard "player1"      # Rank by ascending score
+ZREVRANK leaderboard "player1"   # Rank by descending score
+
+# Count members in score range
+ZCOUNT leaderboard 100 200
+
+# Get set size
+ZCARD leaderboard
+
+# Remove members
+ZREM leaderboard "player1"
+
+# Remove by rank
+ZREMRANGEBYRANK leaderboard 0 2  # Remove top 3 by rank
+
+# Remove by score
+ZREMRANGEBYSCORE leaderboard 0 100</code></pre>
+
+            <h3>Common Use Cases for Sorted Sets</h3>
+
+            <h4>Gaming Leaderboards</h4>
+            <pre><code># Update player scores
+ZADD game:leaderboard 1250 "player:alice" 1100 "player:bob" 1300 "player:charlie"
+
+# Get top 10 players
+ZREVRANGE game:leaderboard 0 9 WITHSCORES
+
+# Get player's rank
+ZREVRANK game:leaderboard "player:alice"
+
+# Get players around a specific player
+ZREVRANK game:leaderboard "player:alice"  # Get rank first
+ZREVRANGE game:leaderboard 8 12  # Get players around rank 10</code></pre>
+
+            <h4>Priority Queues</h4>
+            <pre><code># Add tasks with priorities (lower score = higher priority)
+ZADD task_queue 1 "critical_backup"
+ZADD task_queue 3 "send_newsletter"
+ZADD task_queue 2 "process_payments"
+
+# Get highest priority task
+ZRANGE task_queue 0 0  # Get task with lowest score
+ZREM task_queue "critical_backup"  # Remove after processing</code></pre>
+
+            <h4>Time-based Data</h4>
+            <pre><code># Store events with timestamps
+ZADD user:events 1671234567 "login" 1671234590 "view_product" 1671234610 "add_to_cart"
+
+# Get events in time range
+ZRANGEBYSCORE user:events 1671234560 1671234600
+
+# Get recent events
+ZREVRANGE user:events 0 9  # Last 10 events</code></pre>
+
+            <h4>Rate Limiting</h4>
+            <pre><code># Sliding window rate limiting
+# Add current timestamp for each request
+ZADD rate_limit:user:123 1671234567 "req1" 1671234568 "req2"
+
+# Remove old entries (older than 60 seconds)
+ZREMRANGEBYSCORE rate_limit:user:123 0 1671234507
+
+# Check current request count
+ZCARD rate_limit:user:123</code></pre>
+
+            <h3>Performance Characteristics</h3>
+            <ul>
+                <li><strong>Add/remove/update:</strong> O(log N)</li>
+                <li><strong>Range operations:</strong> O(log N + M) where M is the number of elements returned</li>
+                <li><strong>Score/rank lookup:</strong> O(log N)</li>
+                <li><strong>Memory:</strong> ~40 bytes per element + score overhead</li>
+                <li><strong>Best for:</strong> Leaderboards, priority queues, time-series data</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Hashes: Object-like Structures</h2>
+            
+            <h3>What are Redis Hashes?</h3>
+            <p>Redis Hashes are maps between string fields and string values, similar to objects in programming languages or rows in a database. They're perfect for representing objects and provide memory-efficient storage for related data.</p>
+
+            <h3>Hash Commands</h3>
+
+            <h4>Setting and Getting Fields</h4>
+            <pre><code># Set individual fields
+HSET user:1000 name "John Doe" email "john@example.com" age "30"
+
+# Set multiple fields at once
+HMSET user:1001 name "Jane Smith" email "jane@example.com" age "25" city "New York"
+
+# Get individual field
+HGET user:1000 name
+
+# Get multiple fields
+HMGET user:1000 name email age
+
+# Get all fields and values
+HGETALL user:1000
+
+# Set field only if it doesn't exist
+HSETNX user:1000 phone "123-456-7890"</code></pre>
+
+            <h4>Field Operations</h4>
+            <pre><code># Check if field exists
+HEXISTS user:1000 email
+
+# Get all field names
+HKEYS user:1000
+
+# Get all values
+HVALS user:1000
+
+# Get number of fields
+HLEN user:1000
+
+# Delete fields
+HDEL user:1000 age phone</code></pre>
+
+            <h4>Numeric Operations</h4>
+            <pre><code># Increment field value
+HSET user:1000 login_count 5
+HINCRBY user:1000 login_count 1    # Now 6
+HINCRBYFLOAT user:1000 balance 10.50</code></pre>
+
+            <h3>Common Use Cases for Hashes</h3>
+
+            <h4>User Profiles</h4>
+            <pre><code># Store user information
+HSET user:1000 name "John Doe" email "john@example.com" created_at "2023-01-15" status "active"
+
+# Update specific fields
+HSET user:1000 last_login "2023-12-01T10:30:00Z"
+
+# Get user profile
+HGETALL user:1000</code></pre>
+
+            <h4>Shopping Carts</h4>
+            <pre><code># Add items to cart (field = product_id, value = quantity)
+HSET cart:user123 product:456 2 product:789 1 product:321 3
+
+# Update quantity
+HINCRBY cart:user123 product:456 1  # Increase quantity by 1
+
+# Get cart contents
+HGETALL cart:user123
+
+# Remove item from cart
+HDEL cart:user123 product:789</code></pre>
+
+            <h4>Configuration Settings</h4>
+            <pre><code># Application settings
+HSET app:config max_connections 100 timeout 30 debug_mode "false"
+
+# Get specific setting
+HGET app:config max_connections
+
+# Update setting
+HSET app:config debug_mode "true"</code></pre>
+
+            <h4>Product Information</h4>
+            <pre><code># Store product details
+HSET product:123 name "Laptop" price "999.99" category "Electronics" stock "25"
+
+# Update stock
+HINCRBY product:123 stock -1  # Decrease stock by 1
+
+# Get product info
+HMGET product:123 name price stock</code></pre>
+
+            <h3>Performance Characteristics</h3>
+            <ul>
+                <li><strong>Field operations:</strong> O(1) for single field, O(N) for N fields</li>
+                <li><strong>Memory efficiency:</strong> Very efficient for small hashes (< 512 fields)</li>
+                <li><strong>Memory:</strong> ~40 bytes overhead per hash + field/value sizes</li>
+                <li><strong>Best for:</strong> Objects, records, small collections of related data</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Streams: Event Sourcing and Real-time Data</h2>
+            
+            <h3>What are Redis Streams?</h3>
+            <p>Redis Streams are append-only data structures that model a log of events. They're designed for real-time data processing, message queuing, and event sourcing patterns. Streams automatically generate unique IDs and support consumer groups for scalable processing.</p>
+
+            <h3>Stream Commands</h3>
+
+            <h4>Adding Entries</h4>
+            <pre><code># Add entry with auto-generated ID
+XADD sensor:temperature * temp 23.5 humidity 65 timestamp 1671234567
+
+# Add entry with specific ID
+XADD sensor:temperature 1671234567000-0 temp 24.1 humidity 68
+
+# Add with maxlen to limit stream size
+XADD sensor:temperature MAXLEN ~ 1000 * temp 22.8 humidity 70</code></pre>
+
+            <h4>Reading Entries</h4>
+            <pre><code># Read all entries
+XRANGE sensor:temperature - +
+
+# Read entries in time range
+XRANGE sensor:temperature 1671234567000 1671234580000
+
+# Read latest entries
+XREVRANGE sensor:temperature + - COUNT 10
+
+# Read from specific ID onward
+XREAD STREAMS sensor:temperature 1671234567000-0</code></pre>
+
+            <h4>Blocking Reads</h4>
+            <pre><code># Block until new entries arrive
+XREAD BLOCK 5000 STREAMS sensor:temperature $
+
+# Read from multiple streams
+XREAD BLOCK 0 STREAMS sensor:temperature sensor:pressure $ $</code></pre>
+
+            <h4>Consumer Groups</h4>
+            <pre><code># Create consumer group
+XGROUP CREATE sensor:temperature processing $ MKSTREAM
+
+# Read as part of consumer group
+XREADGROUP GROUP processing consumer1 COUNT 1 STREAMS sensor:temperature >
+
+# Acknowledge processed message
+XACK sensor:temperature processing 1671234567000-0
+
+# Get pending messages
+XPENDING sensor:temperature processing</code></pre>
+
+            <h3>Common Use Cases for Streams</h3>
+
+            <h4>IoT Data Collection</h4>
+            <pre><code># Collect sensor data
+XADD sensors:device123 * temperature 25.3 humidity 60 battery 85
+
+# Read recent sensor data
+XREVRANGE sensors:device123 + - COUNT 100
+
+# Process data with consumer groups
+XGROUP CREATE sensors:device123 analytics $
+XREADGROUP GROUP analytics worker1 STREAMS sensors:device123 ></code></pre>
+
+            <h4>Event Sourcing</h4>
+            <pre><code># Record user events
+XADD user:events * user_id 1000 event login ip 192.168.1.1
+XADD user:events * user_id 1000 event view_product product_id 123
+XADD user:events * user_id 1000 event purchase order_id 456
+
+# Replay user events
+XRANGE user:events - +</code></pre>
+
+            <h4>Chat and Messaging</h4>
+            <pre><code># Add chat messages
+XADD chat:room123 * user alice message "Hello everyone!"
+XADD chat:room123 * user bob message "Hi Alice!"
+
+# Get recent messages
+XREVRANGE chat:room123 + - COUNT 50
+
+# Real-time message consumption
+XREAD BLOCK 0 STREAMS chat:room123 $</code></pre>
+
+            <h3>Performance Characteristics</h3>
+            <ul>
+                <li><strong>Append operation:</strong> O(1)</li>
+                <li><strong>Range queries:</strong> O(log N + M) where M is the number of entries returned</li>
+                <li><strong>Memory:</strong> Efficient for time-series data</li>
+                <li><strong>Best for:</strong> Event sourcing, real-time analytics, message queues</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Geospatial: Location-based Data</h2>
+            
+            <h3>What are Redis Geospatial Indexes?</h3>
+            <p>Redis Geospatial indexes allow you to store and query location data efficiently. Built on top of Sorted Sets, they provide commands for storing coordinates and performing location-based searches like finding nearby points.</p>
+
+            <h3>Geospatial Commands</h3>
+
+            <h4>Adding Locations</h4>
+            <pre><code># Add locations (longitude, latitude, member)
+GEOADD locations -74.006 40.7128 "New York"
+GEOADD locations -118.2437 34.0522 "Los Angeles"
+GEOADD locations -87.6298 41.8781 "Chicago"
+
+# Add multiple locations at once
+GEOADD stores -73.9857 40.7484 "store:manhattan" -73.9442 40.8081 "store:bronx"</code></pre>
+
+            <h4>Getting Location Information</h4>
+            <pre><code># Get coordinates
+GEOPOS locations "New York" "Chicago"
+
+# Get distance between points
+GEODIST locations "New York" "Los Angeles" km
+
+# Get geohash
+GEOHASH locations "New York"</code></pre>
+
+            <h4>Proximity Searches</h4>
+            <pre><code># Find locations within radius
+GEORADIUS locations -74.006 40.7128 100 km
+
+# Find locations within radius of a member
+GEORADIUSBYMEMBER locations "New York" 500 km
+
+# Get additional information
+GEORADIUS locations -74.006 40.7128 100 km WITHCOORD WITHDIST WITHGEOHASH
+
+# Count locations in radius
+GEORADIUS locations -74.006 40.7128 100 km COUNT 5</code></pre>
+
+            <h3>Common Use Cases for Geospatial</h3>
+
+            <h4>Store Locator</h4>
+            <pre><code># Add store locations
+GEOADD stores -73.9857 40.7484 "store:1" -73.9442 40.8081 "store:2"
+
+# Find stores near user location
+GEORADIUS stores -73.9857 40.7484 5 km WITHDIST
+
+# Find stores near specific store
+GEORADIUSBYMEMBER stores "store:1" 10 km</code></pre>
+
+            <h4>Ride Sharing</h4>
+            <pre><code># Track driver locations
+GEOADD drivers -73.9857 40.7484 "driver:123" -73.9442 40.8081 "driver:456"
+
+# Find nearby drivers
+GEORADIUS drivers -73.9857 40.7484 2 km WITHDIST COUNT 5
+
+# Update driver location
+GEOADD drivers -73.9900 40.7500 "driver:123"</code></pre>
+
+            <h4>Delivery Tracking</h4>
+            <pre><code># Track delivery locations
+GEOADD deliveries -73.9857 40.7484 "delivery:789"
+
+# Check if delivery is in area
+GEORADIUS deliveries -73.9857 40.7484 1 km</code></pre>
+
+            <h3>Performance Characteristics</h3>
+            <ul>
+                <li><strong>Add location:</strong> O(log N)</li>
+                <li><strong>Radius search:</strong> O(N+log M) where N is the number of elements in the radius, M is the total number of elements</li>
+                <li><strong>Distance calculation:</strong> O(log N)</li>
+                <li><strong>Best for:</strong> Location-based services, proximity searches, mapping applications</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Choosing the Right Data Structure</h2>
+            
+            <h3>Decision Matrix</h3>
+            
+            <table border="1">
+                <tr>
+                    <th>Use Case</th>
+                    <th>Best Data Structure</th>
+                    <th>Alternative</th>
+                    <th>Why</th>
+                </tr>
+                <tr>
+                    <td>Simple caching</td>
+                    <td>String</td>
+                    <td>Hash (for objects)</td>
+                    <td>Simplest, fastest access</td>
+                </tr>
+                <tr>
+                    <td>User session</td>
+                    <td>Hash</td>
+                    <td>String (serialized)</td>
+                    <td>Easy field updates</td>
+                </tr>
+                <tr>
+                    <td>Task queue</td>
+                    <td>List</td>
+                    <td>Stream</td>
+                    <td>FIFO/LIFO operations</td>
+                </tr>
+                <tr>
+                    <td>Leaderboard</td>
+                    <td>Sorted Set</td>
+                    <td>-</td>
+                    <td>Score-based ranking</td>
+                </tr>
+                <tr>
+                    <td>Tags/Categories</td>
+                    <td>Set</td>
+                    <td>-</td>
+                    <td>Unique membership</td>
+                </tr>
+                <tr>
+                    <td>Event logging</td>
+                    <td>Stream</td>
+                    <td>List</td>
+                    <td>Append-only, time-ordered</td>
+                </tr>
+                <tr>
+                    <td>Location search</td>
+                    <td>Geospatial</td>
+                    <td>-</td>
+                    <td>Built-in distance calculations</td>
+                </tr>
+                <tr>
+                    <td>Counters</td>
+                    <td>String</td>
+                    <td>Hash field</td>
+                    <td>Atomic increment operations</td>
+                </tr>
+                <tr>
+                    <td>Recent items</td>
+                    <td>List</td>
+                    <td>Sorted Set</td>
+                    <td>Maintain insertion order</td>
+                </tr>
+                <tr>
+                    <td>Shopping cart</td>
+                    <td>Hash</td>
+                    <td>Set (for simple items)</td>
+                    <td>Item quantities as fields</td>
+                </tr>
+            </table>
+
+            <h3>Performance Guidelines</h3>
+            
+            <h4>Memory Efficiency</h4>
+            <ul>
+                <li><strong>Best:</strong> Hashes (for small objects), Strings</li>
+                <li><strong>Good:</strong> Sets, Lists</li>
+                <li><strong>Consider:</strong> Sorted Sets, Streams (higher overhead)</li>
+            </ul>
+
+            <h4>Access Patterns</h4>
+            <ul>
+                <li><strong>Single item access:</strong> Strings, Hash fields</li>
+                <li><strong>Range access:</strong> Lists, Sorted Sets, Streams</li>
+                <li><strong>Set operations:</strong> Sets</li>
+                <li><strong>Ranked access:</strong> Sorted Sets</li>
+            </ul>
+
+            <h4>Scalability Considerations</h4>
+            <ul>
+                <li><strong>Large collections:</strong> Consider partitioning across multiple keys</li>
+                <li><strong>High write volume:</strong> Streams with consumer groups</li>
+                <li><strong>Complex queries:</strong> Consider Redis modules or external indexing</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Best Practices</h2>
+            
+            <h3>Key Naming Conventions</h3>
+            <pre><code># Use descriptive, hierarchical names
+user:1000:profile
+user:1000:sessions
+product:123:details
+cache:api:weather:london
+
+# Include data type in name when helpful
+queue:email_notifications
+set:user:1000:followers
+zset:game:leaderboard</code></pre>
+
+            <h3>Memory Optimization</h3>
+            <ul>
+                <li>Use Hashes for small objects (< 512 fields)</li>
+                <li>Set appropriate expiration times</li>
+                <li>Use compressed serialization for large values</li>
+                <li>Monitor memory usage with INFO memory</li>
+            </ul>
+
+            <h3>Performance Tips</h3>
+            <ul>
+                <li>Avoid KEYS command in production (use SCAN)</li>
+                <li>Use pipelining for multiple operations</li>
+                <li>Prefer batch operations (MSET, HMSET, etc.)</li>
+                <li>Monitor slow log for performance issues</li>
+            </ul>
+
+            <h3>Data Modeling Guidelines</h3>
+            <ul>
+                <li>Design for your access patterns</li>
+                <li>Denormalize data for performance</li>
+                <li>Use appropriate data structures for each use case</li>
+                <li>Consider using multiple structures for complex entities</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Common Anti-patterns</h2>
+            
+            <h3>Wrong Data Structure Choice</h3>
+            <ul>
+                <li><strong>Using Lists for membership tests:</strong> Use Sets instead</li>
+                <li><strong>Using Sets for ranking:</strong> Use Sorted Sets instead</li>
+                <li><strong>Using Strings for structured data:</strong> Use Hashes instead</li>
+            </ul>
+
+            <h3>Inefficient Operations</h3>
+            <ul>
+                <li><strong>Frequent LINDEX on large lists:</strong> Consider alternative structures</li>
+                <li><strong>Not using batch operations:</strong> Use MGET, HMGET, etc.</li>
+                <li><strong>Scanning entire structures:</strong> Use cursors and limits</li>
+            </ul>
+
+            <h3>Memory Issues</h3>
+            <ul>
+                <li><strong>No expiration on temporary data:</strong> Set TTL appropriately</li>
+                <li><strong>Very large single structures:</strong> Consider partitioning</li>
+                <li><strong>Wrong encoding settings:</strong> Optimize hash and set configurations</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Next Steps</h2>
+            <p>Now that you understand Redis data structures in depth, you're ready to build sophisticated applications. In the next posts of this series, we'll explore:</p>
+            <ul>
+                <li><strong>Essential Redis Commands:</strong> Master daily operations and CLI usage</li>
+                <li><strong>Persistence Strategies:</strong> Ensure data durability in production</li>
+                <li><strong>Advanced Features:</strong> Transactions, Lua scripting, and pub/sub</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Key Takeaways</h2>
+            <ul>
+                <li>Redis offers seven distinct data structures, each optimized for specific use cases</li>
+                <li>Choose data structures based on access patterns and performance requirements</li>
+                <li>Strings are versatile but don't overlook specialized structures</li>
+                <li>Hashes are memory-efficient for small objects and structured data</li>
+                <li>Lists excel at ordered data and queue operations</li>
+                <li>Sets provide unique collections and set operations</li>
+                <li>Sorted Sets enable ranking and time-based operations</li>
+                <li>Streams are perfect for event sourcing and real-time data</li>
+                <li>Geospatial indexes simplify location-based features</li>
+                <li>Proper key naming and memory management are crucial for production use</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Practice Exercises</h2>
+            <ol>
+                <li>Design a social media feed using Lists and Sets</li>
+                <li>Implement a voting system using Sorted Sets</li>
+                <li>Create a session store using Hashes with TTL</li>
+                <li>Build a real-time chat using Streams</li>
+                <li>Design a location-based recommendation system using Geospatial indexes</li>
+            </ol>
+        </section>
+
+        <section>
+            <h2>Further Reading</h2>
+            <ul>
+                <li><a href="https://redis.io/topics/data-types">Official Redis Data Types Documentation</a></li>
+                <li><a href="https://redis.io/commands">Complete Redis Commands Reference</a></li>
+                <li><a href="https://redis.io/topics/memory-optimization">Redis Memory Optimization Guide</a></li>
+                <li><a href="https://redis.io/topics/data-types-intro">Redis Data Types Introduction</a></li>
+                <li><a href="https://redis.io/topics/streams-intro">Redis Streams Tutorial</a></li>
+            </ul>
+        </section>
+    </main>
+
+    <footer>
+        <hr>
+        <p><em>This is the second post in our comprehensive Redis series. You now have the foundation to use Redis effectively in your applications.</em></p>
+        <p><strong>Previous:</strong> <a href="01-introduction-to-redis.html">Introduction to Redis</a></p>
+        <p><strong>Next up:</strong> Essential Redis Commands and Operations</p>
+    </footer>
+</body>
+</html>

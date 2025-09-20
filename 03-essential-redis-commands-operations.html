@@ -1,0 +1,1128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Essential Redis Commands and Operations: Your Daily Toolkit</title>
+</head>
+<body>
+    <header>
+        <h1>Essential Redis Commands and Operations: Your Daily Toolkit</h1>
+        <p><em>Master the Redis command line and essential operations for effective daily development</em></p>
+        <p><strong>Published:</strong> Blog Post #3 of Redis Mastery Series</p>
+    </header>
+
+    <main>
+        <section>
+            <h2>Introduction</h2>
+            <p>Now that you understand Redis data structures, it's time to master the command line interface and essential operations that will make you productive with Redis on a daily basis. The Redis CLI is your primary tool for interacting with Redis, debugging issues, and managing your data.</p>
+            
+            <p>This comprehensive guide covers everything from basic connection management to advanced administrative commands. By the end, you'll be comfortable working with Redis in any environment, from development to production.</p>
+        </section>
+
+        <section>
+            <h2>Getting Started with Redis CLI</h2>
+            
+            <h3>Connecting to Redis</h3>
+            
+            <h4>Basic Connection</h4>
+            <pre><code># Connect to local Redis (default: localhost:6379)
+redis-cli
+
+# Connect to remote Redis
+redis-cli -h redis.example.com -p 6379
+
+# Connect with authentication
+redis-cli -h localhost -p 6379 -a your_password
+
+# Connect to specific database (0-15 by default)
+redis-cli -n 2</code></pre>
+
+            <h4>Connection with URL</h4>
+            <pre><code># Connect using Redis URL
+redis-cli --uri redis://user:password@redis.example.com:6379/0
+
+# Connect with SSL
+redis-cli --uri rediss://user:password@redis.example.com:6380/0</code></pre>
+
+            <h4>One-time Commands</h4>
+            <pre><code># Execute single command without entering interactive mode
+redis-cli SET mykey "Hello World"
+redis-cli GET mykey
+
+# Execute command on remote server
+redis-cli -h redis.example.com GET mykey
+
+# Pipe commands
+echo "SET counter 1" | redis-cli
+echo -e "INCR counter\nGET counter" | redis-cli</code></pre>
+
+            <h3>CLI Environment and Configuration</h3>
+            
+            <h4>Interactive Mode Features</h4>
+            <pre><code># Check connection
+127.0.0.1:6379> PING
+PONG
+
+# Get help for commands
+127.0.0.1:6379> HELP SET
+127.0.0.1:6379> HELP @string    # Help for command group
+
+# Command history (use arrow keys)
+# Tab completion for commands
+# Ctrl+C to cancel current command
+# Ctrl+D or QUIT to exit</code></pre>
+
+            <h4>CLI Options and Settings</h4>
+            <pre><code># Raw output (no formatting)
+redis-cli --raw GET mykey
+
+# CSV output format
+redis-cli --csv
+
+# Enable latency mode
+redis-cli --latency
+
+# Monitor all commands
+redis-cli MONITOR
+
+# Continuous stats
+redis-cli --stat</code></pre>
+        </section>
+
+        <section>
+            <h2>Key Management Commands</h2>
+            
+            <h3>Basic Key Operations</h3>
+            
+            <h4>Key Existence and Type</h4>
+            <pre><code># Check if key exists
+EXISTS mykey                    # Returns 1 if exists, 0 if not
+EXISTS key1 key2 key3          # Count of existing keys
+
+# Get key type
+TYPE mykey                     # Returns string, list, set, zset, hash, stream
+
+# Get all keys (NEVER use in production)
+KEYS *                         # Returns all keys
+KEYS user:*                    # Keys matching pattern
+KEYS user:1???                 # Wildcard patterns</code></pre>
+
+            <h4>Safe Key Scanning</h4>
+            <pre><code># Scan keys safely (use instead of KEYS in production)
+SCAN 0                         # Start scan, returns cursor and keys
+SCAN 0 MATCH user:*            # Scan with pattern
+SCAN 0 COUNT 100               # Scan with count hint
+
+# Example: Scan all user keys
+redis-cli --scan --pattern "user:*"
+
+# Scan specific data types
+SCAN 0 MATCH * TYPE string</code></pre>
+
+            <h4>Key Information</h4>
+            <pre><code># Get key's time to live
+TTL mykey                      # Returns seconds (-1 if no expiry, -2 if key doesn't exist)
+PTTL mykey                     # Returns milliseconds
+
+# Get memory usage
+MEMORY USAGE mykey             # Memory consumed by key in bytes
+MEMORY USAGE mykey SAMPLES 5   # More accurate sampling
+
+# Get encoding
+OBJECT ENCODING mykey          # Internal representation</code></pre>
+
+            <h3>Key Expiration and Persistence</h3>
+            
+            <h4>Setting Expiration</h4>
+            <pre><code># Set expiration time
+EXPIRE mykey 3600              # Expire in 3600 seconds
+EXPIREAT mykey 1671234567      # Expire at Unix timestamp
+PEXPIRE mykey 60000            # Expire in 60000 milliseconds
+PEXPIREAT mykey 1671234567000  # Expire at Unix timestamp (ms)
+
+# Set key with expiration
+SET session:123 "data" EX 3600  # Expire in 1 hour
+SET session:123 "data" PX 60000 # Expire in 60 seconds
+SETEX session:123 3600 "data"   # Alternative syntax</code></pre>
+
+            <h4>Removing Expiration</h4>
+            <pre><code># Remove expiration (make key persistent)
+PERSIST mykey
+
+# Check if operation succeeded
+TTL mykey                      # Should return -1 if persistent</code></pre>
+
+            <h3>Key Modification and Deletion</h3>
+            
+            <h4>Renaming Keys</h4>
+            <pre><code># Rename key
+RENAME oldkey newkey           # Overwrites destination if exists
+RENAMENX oldkey newkey         # Only rename if destination doesn't exist
+
+# Example: Rename user session
+RENAME session:old session:new</code></pre>
+
+            <h4>Deleting Keys</h4>
+            <pre><code># Delete keys
+DEL mykey                      # Delete single key
+DEL key1 key2 key3            # Delete multiple keys
+
+# Asynchronous deletion (better for large keys)
+UNLINK mykey                   # Non-blocking deletion
+UNLINK large_list large_hash   # Delete multiple keys asynchronously</code></pre>
+
+            <h4>Key Dumping and Restoring</h4>
+            <pre><code># Dump key for backup/migration
+DUMP mykey                     # Returns serialized version
+
+# Restore key from dump
+RESTORE newkey 0 "\x00\x15hello world\x06\x00\x..."  # ttl=0 means no expiry
+
+# Copy key to another database
+MOVE mykey 1                   # Move to database 1</code></pre>
+        </section>
+
+        <section>
+            <h2>Database Operations</h2>
+            
+            <h3>Database Selection and Information</h3>
+            
+            <h4>Working with Multiple Databases</h4>
+            <pre><code># Select database (0-15 by default)
+SELECT 0                       # Switch to database 0
+SELECT 1                       # Switch to database 1
+
+# Get current database
+CLIENT LIST                    # Shows connection info including database
+
+# Key count in current database
+DBSIZE</code></pre>
+
+            <h4>Database Management</h4>
+            <pre><code># Clear current database
+FLUSHDB                        # Clear current database
+FLUSHDB ASYNC                  # Asynchronous clearing
+
+# Clear all databases
+FLUSHALL                       # Clear all databases
+FLUSHALL ASYNC                 # Asynchronous clearing
+
+# Get random key from database
+RANDOMKEY</code></pre>
+
+            <h3>Atomic Operations</h3>
+            
+            <h4>Conditional Operations</h4>
+            <pre><code># Set only if key doesn't exist
+SET mykey "value" NX
+
+# Set only if key exists
+SET mykey "new_value" XX
+
+# Conditional string operations
+SETNX mykey "value"            # Set if not exists
+GETSET mykey "new_value"       # Get old value and set new
+
+# Compare and swap pattern
+WATCH mykey                    # Watch key for changes
+MULTI                          # Begin transaction
+SET mykey "new_value"
+EXEC                          # Execute if key unchanged</code></pre>
+
+            <h4>Batch Operations</h4>
+            <pre><code># Multiple operations
+MSET key1 "value1" key2 "value2" key3 "value3"
+MGET key1 key2 key3
+MSETNX key1 "value1" key2 "value2"  # Set multiple only if none exist</code></pre>
+        </section>
+
+        <section>
+            <h2>Data Inspection and Debugging</h2>
+            
+            <h3>Monitoring and Analysis</h3>
+            
+            <h4>Real-time Monitoring</h4>
+            <pre><code># Monitor all commands in real-time
+MONITOR
+
+# Sample output:
+# 1671234567.123456 [0 127.0.0.1:12345] "set" "mykey" "value"
+# 1671234568.654321 [0 127.0.0.1:12346] "get" "mykey"</code></pre>
+
+            <h4>Slow Query Log</h4>
+            <pre><code># Get slow queries
+SLOWLOG GET                    # Get all slow queries
+SLOWLOG GET 10                 # Get last 10 slow queries
+SLOWLOG LEN                    # Get slow query count
+SLOWLOG RESET                  # Clear slow query log
+
+# Configure slow log
+CONFIG SET slowlog-log-slower-than 10000  # Log queries slower than 10ms
+CONFIG SET slowlog-max-len 100             # Keep last 100 slow queries</code></pre>
+
+            <h4>Command Statistics</h4>
+            <pre><code># Get command statistics
+INFO commandstats
+
+# Sample output:
+# cmdstat_get:calls=1000,usec=1500,usec_per_call=1.50
+# cmdstat_set:calls=800,usec=2000,usec_per_call=2.50
+
+# Reset command stats
+CONFIG RESETSTAT</code></pre>
+
+            <h3>Memory Analysis</h3>
+            
+            <h4>Memory Usage Information</h4>
+            <pre><code># General memory info
+INFO memory
+
+# Detailed memory usage
+MEMORY USAGE mykey             # Memory used by specific key
+MEMORY USAGE mykey SAMPLES 0   # Precise measurement
+
+# Memory statistics
+MEMORY STATS
+
+# Memory doctor (suggestions for optimization)
+MEMORY DOCTOR</code></pre>
+
+            <h4>Memory Debugging</h4>
+            <pre><code># Find largest keys
+redis-cli --bigkeys            # Scan and report largest keys
+
+# Sample largest keys by type
+redis-cli --bigkeys --pattern "user:*"
+
+# Memory profiling
+redis-cli --memkeys            # Show memory usage per key
+
+# Find keys using most memory
+redis-cli --memkeys --pattern "*" | head -20</code></pre>
+
+            <h3>Connection and Client Management</h3>
+            
+            <h4>Client Information</h4>
+            <pre><code># List connected clients
+CLIENT LIST
+
+# Get current client info
+CLIENT INFO
+
+# Set client name
+CLIENT SETNAME "web-server-1"
+CLIENT GETNAME
+
+# Kill client connection
+CLIENT KILL 127.0.0.1:12345
+CLIENT KILL TYPE normal        # Kill all normal clients</code></pre>
+
+            <h4>Connection Debugging</h4>
+            <pre><code># Test connection
+PING                           # Should return PONG
+PING "hello"                   # Should return "hello"
+
+# Get server time
+TIME                           # Returns [unix_timestamp, microseconds]
+
+# Echo message
+ECHO "Hello Redis"
+
+# Connection statistics
+INFO clients</code></pre>
+        </section>
+
+        <section>
+            <h2>Server Information and Configuration</h2>
+            
+            <h3>Server Information</h3>
+            
+            <h4>Comprehensive Server Stats</h4>
+            <pre><code># Get all server information
+INFO
+
+# Get specific sections
+INFO server                    # Server version, uptime, etc.
+INFO memory                    # Memory usage statistics
+INFO persistence               # RDB and AOF information
+INFO stats                     # General statistics
+INFO replication              # Master/slave info
+INFO cpu                      # CPU consumption
+INFO cluster                  # Cluster information
+INFO keyspace                 # Database statistics</code></pre>
+
+            <h4>Runtime Information</h4>
+            <pre><code># Get Redis version
+INFO server | grep redis_version
+
+# Get uptime
+INFO server | grep uptime_in_seconds
+
+# Get memory usage
+INFO memory | grep used_memory_human
+
+# Get connected clients
+INFO clients | grep connected_clients</code></pre>
+
+            <h3>Configuration Management</h3>
+            
+            <h4>Reading Configuration</h4>
+            <pre><code># Get all configuration
+CONFIG GET "*"
+
+# Get specific configuration
+CONFIG GET "maxmemory"
+CONFIG GET "save"
+CONFIG GET "*timeout*"         # All timeout-related settings
+
+# Get configuration pattern
+CONFIG GET "max*"              # All settings starting with "max"</code></pre>
+
+            <h4>Modifying Configuration</h4>
+            <pre><code># Set configuration at runtime
+CONFIG SET maxmemory "1gb"
+CONFIG SET timeout 300
+CONFIG SET save "900 1 300 10 60 10000"
+
+# Rewrite configuration file
+CONFIG REWRITE                 # Save current config to redis.conf
+
+# Reset configuration to default
+CONFIG RESETSTAT               # Reset statistics only</code></pre>
+
+            <h3>Persistence Operations</h3>
+            
+            <h4>Manual Snapshots</h4>
+            <pre><code># Create RDB snapshot
+SAVE                           # Blocking save
+BGSAVE                         # Background save
+
+# Check last save time
+LASTSAVE                       # Unix timestamp of last successful save
+
+# Get background save status
+INFO persistence | grep rdb_bgsave_in_progress</code></pre>
+
+            <h4>AOF Operations</h4>
+            <pre><code># Force AOF rewrite
+BGREWRITEAOF                   # Background AOF rewrite
+
+# Get AOF status
+INFO persistence | grep aof
+
+# Manual AOF flush (if appendfsync is no)
+FSYNC</code></pre>
+        </section>
+
+        <section>
+            <h2>Advanced Command Techniques</h2>
+            
+            <h3>Pattern Matching and Filtering</h3>
+            
+            <h4>Pattern Syntax</h4>
+            <pre><code># Glob-style patterns
+KEYS user:*                    # All keys starting with "user:"
+KEYS *:config                  # All keys ending with ":config"
+KEYS user:???                  # Keys like "user:123", "user:abc"
+KEYS user:[123]*               # Keys starting with "user:1", "user:2", or "user:3"
+
+# Character classes
+KEYS session:[0-9]*            # Sessions starting with a digit
+KEYS temp:*[abc]               # Temp keys ending with a, b, or c</code></pre>
+
+            <h4>Safe Pattern Iteration</h4>
+            <pre><code># Scan with patterns
+SCAN 0 MATCH "user:*" COUNT 100
+
+# Iterate through all matching keys
+cursor=0
+while true; do
+    result=$(redis-cli SCAN $cursor MATCH "user:*" COUNT 100)
+    cursor=$(echo $result | cut -d' ' -f1)
+    keys=$(echo $result | cut -d' ' -f2-)
+    # Process keys...
+    if [ $cursor -eq 0 ]; then break; fi
+done</code></pre>
+
+            <h3>Pipelining and Batching</h3>
+            
+            <h4>Command Pipelining</h4>
+            <pre><code># Pipe multiple commands for better performance
+echo -e "SET key1 value1\nSET key2 value2\nSET key3 value3" | redis-cli --pipe
+
+# Using printf for complex pipelines
+printf "SET user:1 'John'\nSET user:2 'Jane'\nMGET user:1 user:2\n" | redis-cli --pipe</code></pre>
+
+            <h4>Mass Insertion</h4>
+            <pre><code># Prepare data file for mass insertion
+cat > data.txt << EOF
+SET user:1000 "John Doe"
+SET user:1001 "Jane Smith"
+HSET product:123 name "Laptop" price "999.99"
+SADD tags:tech "programming" "redis" "database"
+EOF
+
+# Execute mass insertion
+cat data.txt | redis-cli --pipe</code></pre>
+
+            <h3>Transactions and Scripting</h3>
+            
+            <h4>Basic Transactions</h4>
+            <pre><code># Simple transaction
+MULTI                          # Start transaction
+SET user:1000:name "John"
+SET user:1000:email "john@example.com"
+INCR user:count
+EXEC                          # Execute all commands atomically
+
+# Discard transaction
+MULTI
+SET somekey "value"
+DISCARD                       # Cancel transaction</code></pre>
+
+            <h4>Watched Transactions</h4>
+            <pre><code># Optimistic locking with WATCH
+WATCH user:1000:balance       # Watch for changes
+balance=$(redis-cli GET user:1000:balance)
+new_balance=$((balance - 100))
+MULTI
+SET user:1000:balance $new_balance
+EXEC                          # Fails if balance was modified</code></pre>
+
+            <h4>Lua Script Execution</h4>
+            <pre><code># Execute Lua script
+EVAL "return redis.call('set', KEYS[1], ARGV[1])" 1 mykey myvalue
+
+# Atomic increment with max value
+EVAL "
+local current = redis.call('get', KEYS[1]) or 0
+local max = tonumber(ARGV[1])
+local increment = tonumber(ARGV[2])
+local new_val = tonumber(current) + increment
+if new_val <= max then
+    return redis.call('set', KEYS[1], new_val)
+else
+    return nil
+end
+" 1 counter 1000 10</code></pre>
+        </section>
+
+        <section>
+            <h2>Performance Testing and Benchmarking</h2>
+            
+            <h3>Built-in Benchmarking</h3>
+            
+            <h4>Basic Benchmarks</h4>
+            <pre><code># Default benchmark
+redis-benchmark
+
+# Specific operations
+redis-benchmark -t set,get -n 100000
+
+# Custom data size
+redis-benchmark -t set -n 100000 -d 100  # 100-byte values
+
+# Quiet mode (summary only)
+redis-benchmark -t set,get -n 100000 -q</code></pre>
+
+            <h4>Advanced Benchmarking</h4>
+            <pre><code># Pipeline benchmark
+redis-benchmark -t set,get -n 100000 -P 16
+
+# Multiple clients
+redis-benchmark -t set -n 100000 -c 50
+
+# Key space distribution
+redis-benchmark -t set -n 100000 -r 10000  # Random keys from 0-9999
+
+# Specific host and port
+redis-benchmark -h redis.example.com -p 6379 -t get -n 50000</code></pre>
+
+            <h3>Custom Performance Testing</h3>
+            
+            <h4>Latency Monitoring</h4>
+            <pre><code># Monitor latency
+redis-cli --latency                    # Basic latency monitoring
+redis-cli --latency-history           # Latency history
+redis-cli --latency-dist              # Latency distribution
+
+# Monitor specific operations
+redis-cli --latency -h redis.example.com -p 6379</code></pre>
+
+            <h4>Continuous Statistics</h4>
+            <pre><code># Continuous stats display
+redis-cli --stat
+
+# Sample output updates every second:
+# ops/sec: 1250, keys: 50000, mem: 2.5MB</code></pre>
+        </section>
+
+        <section>
+            <h2>Debugging Common Issues</h2>
+            
+            <h3>Connection Problems</h3>
+            
+            <h4>Troubleshooting Connection Issues</h4>
+            <pre><code># Test basic connectivity
+redis-cli ping
+
+# Check if Redis is running
+ps aux | grep redis-server
+
+# Check port binding
+netstat -tlnp | grep 6379
+# or
+ss -tlnp | grep 6379
+
+# Test from different location
+telnet redis.example.com 6379</code></pre>
+
+            <h4>Authentication Issues</h4>
+            <pre><code># Test authentication
+redis-cli -a your_password ping
+
+# Check current authentication
+AUTH your_password
+PING
+
+# Verify user permissions (Redis 6+)
+ACL WHOAMI
+ACL LIST</code></pre>
+
+            <h3>Performance Issues</h3>
+            
+            <h4>Identifying Slow Operations</h4>
+            <pre><code># Check slow queries
+SLOWLOG GET 10
+
+# Monitor memory usage
+INFO memory
+
+# Check for blocking operations
+CLIENT LIST | grep "blocked"
+
+# Look for large keys
+redis-cli --bigkeys</code></pre>
+
+            <h4>Memory Issues</h4>
+            <pre><code># Check memory usage
+INFO memory | grep used_memory_human
+
+# Find memory-hungry keys
+redis-cli --memkeys
+
+# Check for fragmentation
+INFO memory | grep mem_fragmentation_ratio
+
+# Get memory usage suggestions
+MEMORY DOCTOR</code></pre>
+
+            <h3>Data Consistency Issues</h3>
+            
+            <h4>Debugging Data Problems</h4>
+            <pre><code># Check key expiration
+TTL suspicious_key
+
+# Verify key type
+TYPE key_name
+
+# Check if key exists
+EXISTS key_name
+
+# Get detailed key information
+OBJECT ENCODING key_name
+MEMORY USAGE key_name</code></pre>
+
+            <h4>Replication Issues</h4>
+            <pre><code># Check replication status
+INFO replication
+
+# On master: Check connected slaves
+INFO replication | grep connected_slaves
+
+# On slave: Check master connection
+INFO replication | grep master_link_status
+
+# Monitor replication lag
+INFO replication | grep master_repl_offset</code></pre>
+        </section>
+
+        <section>
+            <h2>Security and Access Control</h2>
+            
+            <h3>Basic Security</h3>
+            
+            <h4>Password Authentication</h4>
+            <pre><code># Set password (Redis 5 and below)
+CONFIG SET requirepass "your_secure_password"
+
+# Authenticate
+AUTH your_secure_password
+
+# Remove password
+CONFIG SET requirepass ""</code></pre>
+
+            <h4>Access Control Lists (Redis 6+)</h4>
+            <pre><code># View current user
+ACL WHOAMI
+
+# List all users
+ACL LIST
+
+# Create new user
+ACL SETUSER myuser on >mypassword ~cached:* +get +set
+
+# Delete user
+ACL DELUSER myuser
+
+# Show user details
+ACL GETUSER myuser</code></pre>
+
+            <h3>Command Restrictions</h3>
+            
+            <h4>Disable Dangerous Commands</h4>
+            <pre><code># Rename dangerous commands in redis.conf
+# rename-command FLUSHDB ""
+# rename-command FLUSHALL ""
+# rename-command KEYS ""
+# rename-command CONFIG ""
+
+# Or rename to something obscure
+# rename-command FLUSHDB "FLUSH_DB_VERY_DANGEROUS_COMMAND"</code></pre>
+
+            <h4>Command Filtering</h4>
+            <pre><code># Block specific commands for user (Redis 6+)
+ACL SETUSER limited_user on >password -flushdb -flushall -keys
+
+# Allow only specific commands
+ACL SETUSER readonly_user on >password +get +mget +exists +ttl</code></pre>
+        </section>
+
+        <section>
+            <h2>Scripting and Automation</h2>
+            
+            <h3>Shell Scripts for Redis Operations</h3>
+            
+            <h4>Backup Script</h4>
+            <pre><code>#!/bin/bash
+# Redis backup script
+
+DATE=$(date +%Y%m%d_%H%M%S)
+BACKUP_DIR="/backups/redis"
+REDIS_HOST="localhost"
+REDIS_PORT="6379"
+
+# Create backup directory
+mkdir -p $BACKUP_DIR
+
+# Trigger background save
+redis-cli -h $REDIS_HOST -p $REDIS_PORT BGSAVE
+
+# Wait for backup to complete
+while [ $(redis-cli -h $REDIS_HOST -p $REDIS_PORT LASTSAVE) -eq $(redis-cli -h $REDIS_HOST -p $REDIS_PORT LASTSAVE) ]; do
+    sleep 1
+done
+
+# Copy RDB file
+cp /var/lib/redis/dump.rdb $BACKUP_DIR/redis_backup_$DATE.rdb
+
+echo "Backup completed: $BACKUP_DIR/redis_backup_$DATE.rdb"</code></pre>
+
+            <h4>Key Migration Script</h4>
+            <pre><code>#!/bin/bash
+# Migrate keys between Redis instances
+
+SOURCE_HOST="old-redis.example.com"
+SOURCE_PORT="6379"
+DEST_HOST="new-redis.example.com"
+DEST_PORT="6379"
+PATTERN="user:*"
+
+# Get keys matching pattern
+redis-cli -h $SOURCE_HOST -p $SOURCE_PORT --scan --pattern "$PATTERN" | while read key; do
+    # Get TTL
+    TTL=$(redis-cli -h $SOURCE_HOST -p $SOURCE_PORT TTL "$key")
+    
+    # Dump key
+    DUMP=$(redis-cli -h $SOURCE_HOST -p $SOURCE_PORT DUMP "$key")
+    
+    # Restore to destination
+    if [ "$TTL" -eq "-1" ]; then
+        redis-cli -h $DEST_HOST -p $DEST_PORT RESTORE "$key" 0 "$DUMP"
+    else
+        redis-cli -h $DEST_HOST -p $DEST_PORT RESTORE "$key" $((TTL * 1000)) "$DUMP"
+    fi
+    
+    echo "Migrated: $key"
+done</code></pre>
+
+            <h3>Monitoring Scripts</h3>
+            
+            <h4>Health Check Script</h4>
+            <pre><code>#!/bin/bash
+# Redis health check script
+
+REDIS_HOST="localhost"
+REDIS_PORT="6379"
+THRESHOLD_MEMORY=90  # Alert if memory usage > 90%
+THRESHOLD_CLIENTS=100  # Alert if connected clients > 100
+
+# Test connectivity
+if ! redis-cli -h $REDIS_HOST -p $REDIS_PORT ping > /dev/null 2>&1; then
+    echo "CRITICAL: Redis is not responding"
+    exit 2
+fi
+
+# Check memory usage
+MEMORY_USED=$(redis-cli -h $REDIS_HOST -p $REDIS_PORT INFO memory | grep used_memory_rss: | cut -d: -f2 | tr -d '\r')
+MEMORY_MAX=$(redis-cli -h $REDIS_HOST -p $REDIS_PORT CONFIG GET maxmemory | tail -1)
+
+if [ "$MEMORY_MAX" != "0" ]; then
+    MEMORY_PERCENT=$((MEMORY_USED * 100 / MEMORY_MAX))
+    if [ $MEMORY_PERCENT -gt $THRESHOLD_MEMORY ]; then
+        echo "WARNING: Memory usage is ${MEMORY_PERCENT}%"
+    fi
+fi
+
+# Check connected clients
+CLIENTS=$(redis-cli -h $REDIS_HOST -p $REDIS_PORT INFO clients | grep connected_clients: | cut -d: -f2 | tr -d '\r')
+if [ $CLIENTS -gt $THRESHOLD_CLIENTS ]; then
+    echo "WARNING: High number of connected clients: $CLIENTS"
+fi
+
+echo "OK: Redis is healthy"</code></pre>
+
+            <h4>Performance Monitoring</h4>
+            <pre><code>#!/bin/bash
+# Redis performance monitoring
+
+REDIS_HOST="localhost"
+REDIS_PORT="6379"
+INTERVAL=5
+
+echo "Monitoring Redis performance (Ctrl+C to stop)"
+echo "Time,Operations/sec,Memory(MB),Clients,Keys"
+
+while true; do
+    TIMESTAMP=$(date '+%H:%M:%S')
+    
+    # Get stats
+    STATS=$(redis-cli -h $REDIS_HOST -p $REDIS_PORT INFO stats)
+    MEMORY=$(redis-cli -h $REDIS_HOST -p $REDIS_PORT INFO memory)
+    CLIENTS=$(redis-cli -h $REDIS_HOST -p $REDIS_PORT INFO clients)
+    
+    # Parse values
+    OPS=$(echo "$STATS" | grep instantaneous_ops_per_sec | cut -d: -f2 | tr -d '\r')
+    MEM=$(echo "$MEMORY" | grep used_memory_rss: | cut -d: -f2 | tr -d '\r')
+    MEM_MB=$((MEM / 1024 / 1024))
+    CLIENT_COUNT=$(echo "$CLIENTS" | grep connected_clients: | cut -d: -f2 | tr -d '\r')
+    KEYS=$(redis-cli -h $REDIS_HOST -p $REDIS_PORT DBSIZE)
+    
+    echo "$TIMESTAMP,$OPS,$MEM_MB,$CLIENT_COUNT,$KEYS"
+    
+    sleep $INTERVAL
+done</code></pre>
+        </section>
+
+        <section>
+            <h2>Best Practices for Command Usage</h2>
+            
+            <h3>Production Safety</h3>
+            
+            <h4>Commands to Avoid in Production</h4>
+            <ul>
+                <li><strong>KEYS:</strong> Use SCAN instead for pattern matching</li>
+                <li><strong>FLUSHALL/FLUSHDB:</strong> Extremely dangerous, can delete all data</li>
+                <li><strong>MONITOR:</strong> High overhead, use only for debugging</li>
+                <li><strong>DEBUG SEGFAULT:</strong> Crashes Redis server</li>
+                <li><strong>SHUTDOWN:</strong> Stops Redis server</li>
+            </ul>
+
+            <h4>Safe Alternatives</h4>
+            <pre><code># Instead of KEYS, use SCAN
+# Bad
+KEYS user:*
+
+# Good
+SCAN 0 MATCH user:* COUNT 100
+
+# Instead of blocking operations, use timeouts
+# Bad
+BRPOP queue 0  # Blocks forever
+
+# Good
+BRPOP queue 30  # Timeout after 30 seconds</code></pre>
+
+            <h3>Performance Optimization</h3>
+            
+            <h4>Efficient Command Usage</h4>
+            <pre><code># Use batch operations when possible
+# Less efficient
+SET key1 value1
+SET key2 value2
+SET key3 value3
+
+# More efficient
+MSET key1 value1 key2 value2 key3 value3
+
+# Use pipelining for multiple commands
+echo -e "GET key1\nGET key2\nGET key3" | redis-cli --pipe</code></pre>
+
+            <h4>Memory-conscious Operations</h4>
+            <pre><code># Set expiration to prevent memory leaks
+SET temp_key "value" EX 3600
+
+# Use appropriate data structures
+# For small objects, use hashes instead of multiple strings
+HSET user:1000 name "John" email "john@example.com"
+
+# Instead of
+SET user:1000:name "John"
+SET user:1000:email "john@example.com"</code></pre>
+
+            <h3>Error Handling and Debugging</h3>
+            
+            <h4>Command Return Value Checking</h4>
+            <pre><code># Check if SET was successful
+if redis-cli SET mykey "value" | grep -q "OK"; then
+    echo "Set successful"
+else
+    echo "Set failed"
+fi
+
+# Check if key exists before operations
+if redis-cli EXISTS mykey | grep -q "1"; then
+    redis-cli GET mykey
+else
+    echo "Key does not exist"
+fi</code></pre>
+
+            <h4>Handling Errors Gracefully</h4>
+            <pre><code># Use appropriate exit codes
+if ! redis-cli ping > /dev/null 2>&1; then
+    echo "Redis connection failed"
+    exit 1
+fi
+
+# Timeout for potentially slow operations
+timeout 10 redis-cli --scan --pattern "large:*" || echo "Scan timed out"</code></pre>
+        </section>
+
+        <section>
+            <h2>Advanced Tips and Tricks</h2>
+            
+            <h3>CLI Productivity Tips</h3>
+            
+            <h4>Command Shortcuts and Aliases</h4>
+            <pre><code># Create useful aliases in your shell
+alias redis='redis-cli'
+alias redis-local='redis-cli -h localhost -p 6379'
+alias redis-prod='redis-cli -h production.redis.com -p 6379 -a $REDIS_PASSWORD'
+
+# Use environment variables for connection info
+export REDIS_HOST="redis.example.com"
+export REDIS_PORT="6379"
+export REDIS_PASSWORD="your_password"
+
+redis-cli -h $REDIS_HOST -p $REDIS_PORT -a $REDIS_PASSWORD</code></pre>
+
+            <h4>Output Formatting</h4>
+            <pre><code># JSON-like output for hashes
+redis-cli HGETALL user:1000 | redis-cli --csv
+
+# Raw output without quotes
+redis-cli --raw GET mykey
+
+# Repeat command every N seconds
+watch -n 5 'redis-cli INFO memory | grep used_memory_human'</code></pre>
+
+            <h3>Advanced Patterns</h3>
+            
+            <h4>Conditional Operations</h4>
+            <pre><code># Increment counter only if below threshold
+EVAL "
+local current = redis.call('get', KEYS[1]) or 0
+if tonumber(current) < tonumber(ARGV[1]) then
+    return redis.call('incr', KEYS[1])
+else
+    return nil
+end
+" 1 counter 1000
+
+# Set with conflict resolution
+EVAL "
+local existing = redis.call('get', KEYS[1])
+if existing then
+    return existing
+else
+    redis.call('set', KEYS[1], ARGV[1])
+    return ARGV[1]
+end
+" 1 mykey "new_value"</code></pre>
+
+            <h4>Complex Data Operations</h4>
+            <pre><code># Move item between lists atomically
+RPOPLPUSH source_list dest_list
+
+# Rotate list (move last element to front)
+RPOPLPUSH mylist mylist
+
+# Get and reset counter atomically
+EVAL "
+local current = redis.call('get', KEYS[1]) or 0
+redis.call('set', KEYS[1], 0)
+return current
+" 1 counter</code></pre>
+        </section>
+
+        <section>
+            <h2>Troubleshooting Common Scenarios</h2>
+            
+            <h3>Data Recovery Scenarios</h3>
+            
+            <h4>Accidentally Deleted Keys</h4>
+            <pre><code># If you have backups, restore specific keys
+# 1. Load backup into temporary database
+redis-cli -n 15 < backup.rdb
+
+# 2. Copy specific keys
+redis-cli -n 15 DUMP mykey | redis-cli -n 0 RESTORE mykey 0
+
+# 3. If using AOF, replay from specific point
+# Edit AOF file to remove unwanted operations, then restart Redis</code></pre>
+
+            <h4>Memory Full Scenarios</h4>
+            <pre><code># Find and remove large keys
+redis-cli --bigkeys
+
+# Remove expired keys manually
+redis-cli EVAL "
+local keys = redis.call('scan', 0, 'count', 1000)
+local expired = 0
+for i=1,#keys[2] do
+    if redis.call('ttl', keys[2][i]) == -2 then
+        redis.call('del', keys[2][i])
+        expired = expired + 1
+    end
+end
+return expired
+" 0
+
+# Set memory policy to handle future issues
+CONFIG SET maxmemory-policy allkeys-lru</code></pre>
+
+            <h3>Performance Troubleshooting</h3>
+            
+            <h4>Identifying Bottlenecks</h4>
+            <pre><code># Check for blocking operations
+CLIENT LIST | grep blocked
+
+# Identify slow queries
+SLOWLOG GET 10
+
+# Check memory fragmentation
+INFO memory | grep fragmentation
+
+# Monitor key access patterns
+MONITOR | grep -E "(GET|SET)" | head -100</code></pre>
+
+            <h4>Network Issues</h4>
+            <pre><code># Test network latency
+redis-cli --latency
+
+# Check connection count
+INFO clients | grep connected_clients
+
+# Monitor connection patterns
+CLIENT LIST | awk '{print $2}' | sort | uniq -c</code></pre>
+        </section>
+
+        <section>
+            <h2>Next Steps</h2>
+            <p>With these essential commands and operations in your toolkit, you're now equipped to work efficiently with Redis in any environment. In the next posts of this series, we'll explore:</p>
+            <ul>
+                <li><strong>Redis Data Persistence:</strong> RDB snapshots, AOF logging, and backup strategies</li>
+                <li><strong>Replication and High Availability:</strong> Master-slave setup and Redis Sentinel</li>
+                <li><strong>Advanced Features:</strong> Pub/Sub messaging, Lua scripting, and modules</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Key Takeaways</h2>
+            <ul>
+                <li>Master the Redis CLI for efficient daily operations</li>
+                <li>Use SCAN instead of KEYS for production key pattern matching</li>
+                <li>Leverage batch operations and pipelining for better performance</li>
+                <li>Monitor server health with INFO, SLOWLOG, and performance commands</li>
+                <li>Implement proper error handling and safety measures</li>
+                <li>Use transactions and Lua scripts for atomic operations</li>
+                <li>Set up monitoring and alerting for production environments</li>
+                <li>Understand memory management and debugging techniques</li>
+                <li>Practice safe command usage to avoid data loss</li>
+                <li>Automate common operations with scripts and tools</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Practice Exercises</h2>
+            <ol>
+                <li>Set up a monitoring script to track Redis performance metrics</li>
+                <li>Create a backup and restore procedure for your Redis data</li>
+                <li>Implement a key migration script between Redis instances</li>
+                <li>Practice using transactions for atomic multi-key operations</li>
+                <li>Set up ACL users with different permission levels</li>
+                <li>Create a health check script for Redis monitoring</li>
+                <li>Practice debugging slow queries and memory issues</li>
+            </ol>
+        </section>
+
+        <section>
+            <h2>Command Reference Quick Sheet</h2>
+            
+            <h3>Essential Daily Commands</h3>
+            <pre><code># Connection
+redis-cli                      # Connect to local Redis
+redis-cli -h host -p port      # Connect to remote Redis
+
+# Key Operations
+EXISTS key                     # Check if key exists
+TYPE key                       # Get key type
+TTL key                        # Get time to live
+SCAN 0 MATCH pattern           # Safe key scanning
+
+# Information
+INFO                           # Server information
+DBSIZE                         # Key count
+MEMORY USAGE key               # Key memory usage
+
+# Monitoring
+MONITOR                        # Real-time command monitoring
+SLOWLOG GET                    # Slow query log
+
+# Safety
+SAVE                           # Create snapshot
+CONFIG SET save "900 1"       # Configure auto-save</code></pre>
+        </section>
+
+        <section>
+            <h2>Further Reading</h2>
+            <ul>
+                <li><a href="https://redis.io/commands">Complete Redis Commands Reference</a></li>
+                <li><a href="https://redis.io/topics/rediscli">Redis CLI Documentation</a></li>
+                <li><a href="https://redis.io/topics/admin">Redis Administration Guide</a></li>
+                <li><a href="https://redis.io/topics/benchmarks">Redis Benchmarking Guide</a></li>
+                <li><a href="https://redis.io/topics/debugging">Redis Debugging Guide</a></li>
+                <li><a href="https://redis.io/topics/security">Redis Security Guidelines</a></li>
+            </ul>
+        </section>
+    </main>
+
+    <footer>
+        <hr>
+        <p><em>This is the third post in our comprehensive Redis series. You now have the essential command-line skills for effective Redis operations.</em></p>
+        <p><strong>Previous:</strong> <a href="02-redis-data-structures-deep-dive.html">Redis Data Structures Deep Dive</a></p>
+        <p><strong>Next up:</strong> Redis Data Persistence Strategies</p>
+    </footer>
+</body>
+</html>
