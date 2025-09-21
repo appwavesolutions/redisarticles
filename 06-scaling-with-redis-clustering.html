@@ -1,0 +1,1464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scaling with Redis Clustering: Horizontal Scaling and Data Distribution</title>
+</head>
+<body>
+    <header>
+        <h1>Scaling with Redis Clustering: Horizontal Scaling and Data Distribution</h1>
+        <p><em>Master Redis Cluster for massive scale with automatic sharding and high availability</em></p>
+        <p><strong>Published:</strong> Blog Post #6 of Redis Mastery Series</p>
+    </header>
+
+    <main>
+        <section>
+            <h2>Introduction</h2>
+            <p>As your application grows, a single Redis instance—even with replication—may no longer meet your scaling requirements. You might face memory limitations, CPU bottlenecks, or simply need to distribute data across multiple servers for better performance and availability. This is where Redis Cluster comes into play.</p>
+            
+            <p>Redis Cluster provides automatic data sharding across multiple Redis nodes, allowing you to scale horizontally while maintaining high availability. Unlike simple replication where all nodes contain the same data, clustering distributes your dataset across multiple nodes, enabling you to scale beyond the memory and processing capacity of a single server.</p>
+            
+            <p>In this comprehensive guide, we'll explore Redis Cluster architecture, learn how to set up and manage clustered deployments, understand data distribution mechanisms, and master the operational aspects of running Redis at scale.</p>
+        </section>
+
+        <section>
+            <h2>Understanding Redis Cluster</h2>
+            
+            <h3>What is Redis Cluster?</h3>
+            <p>Redis Cluster is Redis's native sharding solution that provides:</p>
+            <ul>
+                <li><strong>Automatic Sharding:</strong> Data is automatically distributed across nodes</li>
+                <li><strong>High Availability:</strong> Built-in master-slave replication with automatic failover</li>
+                <li><strong>Horizontal Scaling:</strong> Add or remove nodes dynamically</li>
+                <li><strong>Linear Performance:</strong> Performance scales with the number of nodes</li>
+                <li><strong>Fault Tolerance:</strong> Continues operating even when some nodes fail</li>
+            </ul>
+
+            <h3>Cluster vs Other Scaling Approaches</h3>
+            <table border="1">
+                <tr>
+                    <th>Approach</th>
+                    <th>Data Distribution</th>
+                    <th>Write Scaling</th>
+                    <th>Automatic Failover</th>
+                    <th>Complexity</th>
+                </tr>
+                <tr>
+                    <td><strong>Single Instance</strong></td>
+                    <td>All data on one node</td>
+                    <td>Limited</td>
+                    <td>No</td>
+                    <td>Low</td>
+                </tr>
+                <tr>
+                    <td><strong>Replication</strong></td>
+                    <td>Full copy on each node</td>
+                    <td>No (single master)</td>
+                    <td>Yes (with Sentinel)</td>
+                    <td>Medium</td>
+                </tr>
+                <tr>
+                    <td><strong>Client-side Sharding</strong></td>
+                    <td>Application manages</td>
+                    <td>Yes</td>
+                    <td>Manual</td>
+                    <td>High</td>
+                </tr>
+                <tr>
+                    <td><strong>Redis Cluster</strong></td>
+                    <td>Automatic sharding</td>
+                    <td>Yes</td>
+                    <td>Yes</td>
+                    <td>Medium-High</td>
+                </tr>
+            </table>
+
+            <h3>Cluster Architecture</h3>
+            <pre><code>Redis Cluster with 6 nodes (3 masters + 3 slaves):
+
+   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+   │   Master A  │    │   Master B  │    │   Master C  │
+   │ Slots:0-5461│    │Slots:5462-  │    │Slots:10923- │
+   │             │    │    10922    │    │    16383    │
+   └─────┬───────┘    └─────┬───────┘    └─────┬───────┘
+         │                  │                  │
+         │                  │                  │
+   ┌─────▼───────┐    ┌─────▼───────┐    ┌─────▼───────┐
+   │   Slave A   │    │   Slave B   │    │   Slave C   │
+   │   (Replica) │    │   (Replica) │    │   (Replica) │
+   └─────────────┘    └─────────────┘    └─────────────┘
+
+Each master handles a range of hash slots (0-16383 total)
+Slaves provide backup and can handle reads</code></pre>
+
+            <h3>Hash Slots Explained</h3>
+            <p>Redis Cluster uses a hash slot approach for data distribution:</p>
+            <ul>
+                <li><strong>16,384 hash slots total</strong> (numbered 0 to 16383)</li>
+                <li><strong>Each key is mapped to a slot</strong> using CRC16 hash algorithm</li>
+                <li><strong>Each master node owns a range of slots</strong></li>
+                <li><strong>Data is automatically distributed</strong> based on key hashing</li>
+                <li><strong>Slots can be moved</strong> between nodes for rebalancing</li>
+            </ul>
+
+            <h4>Key to Slot Mapping</h4>
+            <pre><code># How Redis determines which slot a key belongs to:
+slot = CRC16(key) mod 16384
+
+# Examples:
+user:1000 → CRC16("user:1000") mod 16384 → slot 5798
+product:123 → CRC16("product:123") mod 16384 → slot 12345
+session:abc → CRC16("session:abc") mod 16384 → slot 8901
+
+# Hash tags for keeping related keys together:
+user:{1000}:profile → CRC16("1000") mod 16384 → slot 1337
+user:{1000}:settings → CRC16("1000") mod 16384 → slot 1337
+# Both keys end up on the same node!</code></pre>
+        </section>
+
+        <section>
+            <h2>Setting Up Redis Cluster</h2>
+            
+            <h3>Prerequisites and Planning</h3>
+            
+            <h4>Minimum Requirements</h4>
+            <ul>
+                <li><strong>At least 3 master nodes</strong> for a functional cluster</li>
+                <li><strong>Odd number of masters</strong> for proper quorum</li>
+                <li><strong>At least 1 slave per master</strong> for high availability</li>
+                <li><strong>6 nodes minimum</strong> for production (3 masters + 3 slaves)</li>
+            </ul>
+
+            <h4>Hardware Planning</h4>
+            <table border="1">
+                <tr>
+                    <th>Cluster Size</th>
+                    <th>Use Case</th>
+                    <th>Total Memory</th>
+                    <th>Nodes</th>
+                    <th>CPU Cores</th>
+                </tr>
+                <tr>
+                    <td>Small</td>
+                    <td>Development/Testing</td>
+                    <td>12-24 GB</td>
+                    <td>3 masters + 3 slaves</td>
+                    <td>2-4 per node</td>
+                </tr>
+                <tr>
+                    <td>Medium</td>
+                    <td>Production workload</td>
+                    <td>96-192 GB</td>
+                    <td>6 masters + 6 slaves</td>
+                    <td>4-8 per node</td>
+                </tr>
+                <tr>
+                    <td>Large</td>
+                    <td>High-scale production</td>
+                    <td>500+ GB</td>
+                    <td>12+ masters + slaves</td>
+                    <td>8-16 per node</td>
+                </tr>
+            </table>
+
+            <h3>Node Configuration</h3>
+            
+            <h4>Basic Cluster Configuration</h4>
+            <pre><code># redis-cluster.conf (common settings for all nodes)
+
+# Basic settings
+port 7000
+bind 0.0.0.0
+protected-mode no  # Use proper firewall instead
+
+# Cluster settings
+cluster-enabled yes
+cluster-config-file nodes-7000.conf
+cluster-node-timeout 15000
+cluster-announce-ip 192.168.1.100  # External IP for the node
+cluster-announce-port 7000
+cluster-announce-bus-port 17000
+
+# Memory settings
+maxmemory 2gb
+maxmemory-policy allkeys-lru
+
+# Persistence
+appendonly yes
+appendfsync everysec
+save 900 1
+save 300 10
+save 60 1000
+
+# Security
+requirepass cluster_password
+masterauth cluster_password
+
+# Performance
+tcp-keepalive 60
+timeout 0
+
+# Logging
+loglevel notice
+logfile /var/log/redis/redis-7000.log
+syslog-enabled yes
+syslog-ident redis-7000
+
+# Directory
+dir /var/lib/redis/7000</code></pre>
+
+            <h4>Individual Node Configurations</h4>
+            <pre><code># Node 1 (192.168.1.101:7000)
+port 7000
+cluster-announce-ip 192.168.1.101
+cluster-config-file nodes-7000.conf
+logfile /var/log/redis/redis-7000.log
+dir /var/lib/redis/7000
+
+# Node 2 (192.168.1.102:7000)  
+port 7000
+cluster-announce-ip 192.168.1.102
+cluster-config-file nodes-7000.conf
+logfile /var/log/redis/redis-7000.log
+dir /var/lib/redis/7000
+
+# Node 3 (192.168.1.103:7000)
+port 7000
+cluster-announce-ip 192.168.1.103
+cluster-config-file nodes-7000.conf
+logfile /var/log/redis/redis-7000.log
+dir /var/lib/redis/7000
+
+# Continue for nodes 4, 5, 6...</code></pre>
+
+            <h3>Creating the Cluster</h3>
+            
+            <h4>Method 1: Using redis-cli (Recommended)</h4>
+            <pre><code># Start all Redis instances first
+for node in 192.168.1.101 192.168.1.102 192.168.1.103 192.168.1.104 192.168.1.105 192.168.1.106; do
+    ssh redis@$node "redis-server /etc/redis/redis-cluster.conf --daemonize yes"
+done
+
+# Create cluster with 3 masters and 3 slaves
+redis-cli --cluster create \
+  192.168.1.101:7000 \
+  192.168.1.102:7000 \
+  192.168.1.103:7000 \
+  192.168.1.104:7000 \
+  192.168.1.105:7000 \
+  192.168.1.106:7000 \
+  --cluster-replicas 1 \
+  -a cluster_password
+
+# Expected output:
+# >>> Performing hash slots allocation on 6 nodes...
+# Master[0] -> Slots 0 - 5460
+# Master[1] -> Slots 5461 - 10922  
+# Master[2] -> Slots 10923 - 16383
+# Adding replica 192.168.1.104:7000 to 192.168.1.101:7000
+# Adding replica 192.168.1.105:7000 to 192.168.1.102:7000
+# Adding replica 192.168.1.106:7000 to 192.168.1.103:7000</code></pre>
+
+            <h4>Method 2: Manual Cluster Setup</h4>
+            <pre><code># Meet all nodes (run on any cluster node)
+redis-cli -h 192.168.1.101 -p 7000 -a cluster_password CLUSTER MEET 192.168.1.102 7000
+redis-cli -h 192.168.1.101 -p 7000 -a cluster_password CLUSTER MEET 192.168.1.103 7000
+redis-cli -h 192.168.1.101 -p 7000 -a cluster_password CLUSTER MEET 192.168.1.104 7000
+redis-cli -h 192.168.1.101 -p 7000 -a cluster_password CLUSTER MEET 192.168.1.105 7000
+redis-cli -h 192.168.1.101 -p 7000 -a cluster_password CLUSTER MEET 192.168.1.106 7000
+
+# Assign slots to masters
+redis-cli -h 192.168.1.101 -p 7000 -a cluster_password CLUSTER ADDSLOTS {0..5460}
+redis-cli -h 192.168.1.102 -p 7000 -a cluster_password CLUSTER ADDSLOTS {5461..10922}
+redis-cli -h 192.168.1.103 -p 7000 -a cluster_password CLUSTER ADDSLOTS {10923..16383}
+
+# Set up replication (get node IDs first)
+master1_id=$(redis-cli -h 192.168.1.101 -p 7000 -a cluster_password CLUSTER MYID)
+master2_id=$(redis-cli -h 192.168.1.102 -p 7000 -a cluster_password CLUSTER MYID)  
+master3_id=$(redis-cli -h 192.168.1.103 -p 7000 -a cluster_password CLUSTER MYID)
+
+redis-cli -h 192.168.1.104 -p 7000 -a cluster_password CLUSTER REPLICATE $master1_id
+redis-cli -h 192.168.1.105 -p 7000 -a cluster_password CLUSTER REPLICATE $master2_id
+redis-cli -h 192.168.1.106 -p 7000 -a cluster_password CLUSTER REPLICATE $master3_id</code></pre>
+
+            <h3>Verifying Cluster Setup</h3>
+            
+            <h4>Cluster Status Commands</h4>
+            <pre><code># Check cluster state
+redis-cli -h 192.168.1.101 -p 7000 -a cluster_password CLUSTER INFO
+
+# Expected output:
+# cluster_state:ok
+# cluster_slots_assigned:16384
+# cluster_slots_ok:16384
+# cluster_slots_pfail:0
+# cluster_slots_fail:0
+# cluster_known_nodes:6
+# cluster_size:3
+
+# List all nodes
+redis-cli -h 192.168.1.101 -p 7000 -a cluster_password CLUSTER NODES
+
+# Check slots distribution
+redis-cli -h 192.168.1.101 -p 7000 -a cluster_password CLUSTER SLOTS</code></pre>
+
+            <h4>Testing Data Distribution</h4>
+            <pre><code># Test key distribution across nodes
+redis-cli -c -h 192.168.1.101 -p 7000 -a cluster_password
+
+# The -c flag enables cluster mode (follows redirects)
+127.0.0.1:7000> SET user:1000 "John Doe"
+-> Redirected to slot [1337] located at 192.168.1.101:7000
+OK
+
+127.0.0.1:7000> SET user:2000 "Jane Smith"  
+-> Redirected to slot [8743] located at 192.168.1.102:7000
+OK
+
+127.0.0.1:7000> SET user:3000 "Bob Wilson"
+-> Redirected to slot [14315] located at 192.168.1.103:7000
+OK
+
+# Verify data is accessible from any node
+127.0.0.1:7000> GET user:1000
+"John Doe"
+127.0.0.1:7000> GET user:2000
+"Jane Smith"</code></pre>
+        </section>
+
+        <section>
+            <h2>Cluster Operations and Management</h2>
+            
+            <h3>Adding Nodes to the Cluster</h3>
+            
+            <h4>Adding a Master Node</h4>
+            <pre><code># Prepare new node (192.168.1.107:7000)
+ssh redis@192.168.1.107 "redis-server /etc/redis/redis-cluster.conf --daemonize yes"
+
+# Add node to cluster
+redis-cli --cluster add-node 192.168.1.107:7000 192.168.1.101:7000 -a cluster_password
+
+# Rebalance slots to include new master
+redis-cli --cluster rebalance 192.168.1.101:7000 -a cluster_password
+
+# Or manually move specific slots
+redis-cli --cluster reshard 192.168.1.101:7000 -a cluster_password
+# Follow prompts to move slots from existing masters to new master</code></pre>
+
+            <h4>Adding a Slave Node</h4>
+            <pre><code># Add slave node
+redis-cli --cluster add-node 192.168.1.108:7000 192.168.1.101:7000 \
+  --cluster-slave \
+  --cluster-master-id master_node_id \
+  -a cluster_password
+
+# Or add as regular node then configure as slave
+redis-cli --cluster add-node 192.168.1.108:7000 192.168.1.101:7000 -a cluster_password
+
+# Then make it a slave of specific master
+redis-cli -h 192.168.1.108 -p 7000 -a cluster_password \
+  CLUSTER REPLICATE master_node_id</code></pre>
+
+            <h3>Removing Nodes from the Cluster</h3>
+            
+            <h4>Removing a Slave Node</h4>
+            <pre><code># Get node ID
+slave_id=$(redis-cli -h 192.168.1.108 -p 7000 -a cluster_password CLUSTER MYID)
+
+# Remove slave node (safe operation)
+redis-cli --cluster del-node 192.168.1.101:7000 $slave_id -a cluster_password</code></pre>
+
+            <h4>Removing a Master Node</h4>
+            <pre><code># First, move all slots away from the master
+redis-cli --cluster reshard 192.168.1.101:7000 -a cluster_password
+# Move all slots from the master to other masters
+
+# Verify master has no slots
+redis-cli -h 192.168.1.107 -p 7000 -a cluster_password CLUSTER NODES | grep master
+
+# Remove the empty master
+master_id=$(redis-cli -h 192.168.1.107 -p 7000 -a cluster_password CLUSTER MYID)
+redis-cli --cluster del-node 192.168.1.101:7000 $master_id -a cluster_password</code></pre>
+
+            <h3>Cluster Maintenance Operations</h3>
+            
+            <h4>Manual Slot Migration</h4>
+            <pre><code># Move specific slots between nodes
+# Example: Move slots 100-200 from node A to node B
+
+source_id="node_a_id_here"
+target_id="node_b_id_here"
+
+# For each slot to move:
+for slot in {100..200}; do
+    # Set target node as importing
+    redis-cli -h target_node -p 7000 -a cluster_password \
+      CLUSTER SETSLOT $slot IMPORTING $source_id
+    
+    # Set source node as migrating  
+    redis-cli -h source_node -p 7000 -a cluster_password \
+      CLUSTER SETSLOT $slot MIGRATING $target_id
+    
+    # Get keys in slot
+    keys=$(redis-cli -h source_node -p 7000 -a cluster_password \
+      CLUSTER GETKEYSINSLOT $slot 100)
+    
+    # Migrate keys
+    if [ -n "$keys" ]; then
+        redis-cli -h source_node -p 7000 -a cluster_password \
+          MIGRATE target_node 7000 "" 0 5000 KEYS $keys
+    fi
+    
+    # Assign slot to target
+    redis-cli -h target_node -p 7000 -a cluster_password \
+      CLUSTER SETSLOT $slot NODE $target_id
+done</code></pre>
+
+            <h4>Automated Rebalancing Script</h4>
+            <pre><code>#!/bin/bash
+# Redis Cluster rebalancing script
+
+CLUSTER_HOST="192.168.1.101"
+CLUSTER_PORT="7000"
+CLUSTER_AUTH="cluster_password"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+}
+
+check_cluster_health() {
+    local state=$(redis-cli -h $CLUSTER_HOST -p $CLUSTER_PORT -a $CLUSTER_AUTH \
+                  CLUSTER INFO | grep cluster_state | cut -d: -f2 | tr -d '\r')
+    
+    if [ "$state" = "ok" ]; then
+        log "Cluster state: OK"
+        return 0
+    else
+        log "ERROR: Cluster state: $state"
+        return 1
+    fi
+}
+
+get_cluster_balance() {
+    log "Checking cluster balance..."
+    
+    redis-cli -h $CLUSTER_HOST -p $CLUSTER_PORT -a $CLUSTER_AUTH \
+      CLUSTER NODES | grep master | while read line; do
+        node_id=$(echo $line | cut -d' ' -f1)
+        node_ip=$(echo $line | cut -d' ' -f2 | cut -d: -f1)
+        slots=$(echo $line | cut -d' ' -f9- | tr ' ' '\n' | grep -c -)
+        log "Master $node_ip has $slots slot ranges"
+    done
+}
+
+rebalance_cluster() {
+    log "Starting cluster rebalance..."
+    
+    if check_cluster_health; then
+        redis-cli --cluster rebalance $CLUSTER_HOST:$CLUSTER_PORT \
+          -a $CLUSTER_AUTH --cluster-threshold 1
+        
+        if [ $? -eq 0 ]; then
+            log "Rebalance completed successfully"
+        else
+            log "ERROR: Rebalance failed"
+            return 1
+        fi
+    else
+        log "ERROR: Cluster not healthy, skipping rebalance"
+        return 1
+    fi
+}
+
+main() {
+    log "Starting cluster maintenance"
+    check_cluster_health
+    get_cluster_balance
+    rebalance_cluster
+    log "Cluster maintenance completed"
+}
+
+main</code></pre>
+        </section>
+
+        <section>
+            <h2>Client-Side Cluster Support</h2>
+            
+            <h3>Understanding Cluster Client Requirements</h3>
+            
+            <h4>Client Responsibilities</h4>
+            <ul>
+                <li><strong>Cluster Discovery:</strong> Learn cluster topology</li>
+                <li><strong>Key Routing:</strong> Calculate which node owns each key</li>
+                <li><strong>Redirection Handling:</strong> Follow MOVED/ASK responses</li>
+                <li><strong>Failure Detection:</strong> Handle node failures gracefully</li>
+                <li><strong>Topology Updates:</strong> Refresh cluster state periodically</li>
+            </ul>
+
+            <h4>Redis Cluster Protocol</h4>
+            <pre><code># Client calculates slot for key
+slot = CRC16(key) mod 16384
+
+# If client connects to wrong node, Redis responds with:
+-MOVED 3999 192.168.1.102:7000
+
+# During slot migration, Redis may respond with:
+-ASK 3999 192.168.1.103:7000
+
+# Client should handle these redirections automatically</code></pre>
+
+            <h3>Python Client Example</h3>
+            
+            <h4>Redis-py Cluster Implementation</h4>
+            <pre><code>from rediscluster import RedisCluster
+import redis
+import time
+import logging
+
+# Cluster connection configuration
+startup_nodes = [
+    {"host": "192.168.1.101", "port": "7000"},
+    {"host": "192.168.1.102", "port": "7000"},
+    {"host": "192.168.1.103", "port": "7000"},
+]
+
+# Create cluster client
+def create_cluster_client():
+    try:
+        client = RedisCluster(
+            startup_nodes=startup_nodes,
+            password="cluster_password",
+            decode_responses=True,
+            skip_full_coverage_check=False,  # Ensure all slots are covered
+            health_check_interval=30,        # Check cluster health every 30s
+            retry_on_timeout=True,
+            socket_timeout=5,
+            socket_connect_timeout=5
+        )
+        return client
+    except Exception as e:
+        logging.error(f"Failed to create cluster client: {e}")
+        return None
+
+# Advanced cluster operations
+class ClusterManager:
+    def __init__(self):
+        self.client = create_cluster_client()
+        
+    def set_with_retry(self, key, value, retries=3):
+        """Set value with automatic retry on cluster changes"""
+        for attempt in range(retries):
+            try:
+                return self.client.set(key, value)
+            except redis.exceptions.ClusterDownError:
+                logging.warning(f"Cluster down, retry {attempt + 1}/{retries}")
+                time.sleep(1)
+                self.client = create_cluster_client()
+            except Exception as e:
+                logging.error(f"Unexpected error: {e}")
+                if attempt == retries - 1:
+                    raise
+                time.sleep(1)
+        
+    def get_cluster_info(self):
+        """Get comprehensive cluster information"""
+        try:
+            nodes = self.client.cluster_nodes()
+            cluster_info = {}
+            
+            for node_id, node_info in nodes.items():
+                cluster_info[node_id] = {
+                    'host': node_info['host'],
+                    'port': node_info['port'],
+                    'role': 'master' if node_info['flags'] == 'master' else 'slave',
+                    'slots': node_info.get('slots', []),
+                    'connected': node_info.get('connected', False)
+                }
+            
+            return cluster_info
+        except Exception as e:
+            logging.error(f"Failed to get cluster info: {e}")
+            return {}
+            
+    def distribute_keys_example(self):
+        """Example of distributing keys across cluster"""
+        keys_by_node = {}
+        
+        # Simulate setting 1000 keys
+        for i in range(1000):
+            key = f"user:{i}"
+            # Calculate which node this key would go to
+            slot = self.client.keyslot(key)
+            node = self.client.cluster_key_slot_node(slot)
+            
+            if node not in keys_by_node:
+                keys_by_node[node] = 0
+            keys_by_node[node] += 1
+            
+        logging.info("Key distribution:")
+        for node, count in keys_by_node.items():
+            logging.info(f"Node {node}: {count} keys")
+
+# Usage example
+cluster_manager = ClusterManager()
+cluster_manager.set_with_retry("user:1000", "John Doe")
+cluster_info = cluster_manager.get_cluster_info()
+print(cluster_info)</code></pre>
+
+            <h3>Java Client Example</h3>
+            
+            <h4>Jedis Cluster Implementation</h4>
+            <pre><code>import redis.clients.jedis.JedisCluster;
+import redis.clients.jedis.HostAndPort;
+import redis.clients.jedis.JedisPoolConfig;
+import java.util.HashSet;
+import java.util.Set;
+
+public class RedisClusterClient {
+    private JedisCluster jedisCluster;
+    
+    public RedisClusterClient() {
+        Set<HostAndPort> jedisClusterNodes = new HashSet<>();
+        jedisClusterNodes.add(new HostAndPort("192.168.1.101", 7000));
+        jedisClusterNodes.add(new HostAndPort("192.168.1.102", 7000));
+        jedisClusterNodes.add(new HostAndPort("192.168.1.103", 7000));
+        
+        JedisPoolConfig poolConfig = new JedisPoolConfig();
+        poolConfig.setMaxTotal(100);
+        poolConfig.setMaxIdle(10);
+        poolConfig.setMinIdle(5);
+        poolConfig.setTestOnBorrow(true);
+        poolConfig.setTestOnReturn(true);
+        
+        jedisCluster = new JedisCluster(
+            jedisClusterNodes,
+            2000,        // connection timeout
+            2000,        // socket timeout  
+            5,           // max attempts
+            "cluster_password",
+            poolConfig
+        );
+    }
+    
+    public void setWithRetry(String key, String value) {
+        int maxRetries = 3;
+        int delay = 1000;
+        
+        for (int i = 0; i < maxRetries; i++) {
+            try {
+                jedisCluster.set(key, value);
+                return;
+            } catch (Exception e) {
+                if (i == maxRetries - 1) {
+                    throw new RuntimeException("Failed to set key after retries", e);
+                }
+                try {
+                    Thread.sleep(delay);
+                    delay *= 2; // exponential backoff
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException("Interrupted during retry", ie);
+                }
+            }
+        }
+    }
+    
+    public String getWithRetry(String key) {
+        int maxRetries = 3;
+        int delay = 1000;
+        
+        for (int i = 0; i < maxRetries; i++) {
+            try {
+                return jedisCluster.get(key);
+            } catch (Exception e) {
+                if (i == maxRetries - 1) {
+                    throw new RuntimeException("Failed to get key after retries", e);
+                }
+                try {
+                    Thread.sleep(delay);
+                    delay *= 2;
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException("Interrupted during retry", ie);
+                }
+            }
+        }
+        return null;
+    }
+    
+    public void close() {
+        if (jedisCluster != null) {
+            jedisCluster.close();
+        }
+    }
+}</code></pre>
+
+            <h3>Node.js Client Example</h3>
+            
+            <h4>ioredis Cluster Implementation</h4>
+            <pre><code>const Redis = require('ioredis');
+
+class RedisClusterManager {
+    constructor() {
+        this.cluster = new Redis.Cluster([
+            { host: '192.168.1.101', port: 7000 },
+            { host: '192.168.1.102', port: 7000 },
+            { host: '192.168.1.103', port: 7000 }
+        ], {
+            redisOptions: {
+                password: 'cluster_password'
+            },
+            enableOfflineQueue: false,
+            retryDelayOnFailover: 100,
+            maxRetriesPerRequest: 3,
+            lazyConnect: true
+        });
+        
+        this.setupEventHandlers();
+    }
+    
+    setupEventHandlers() {
+        this.cluster.on('connect', () => {
+            console.log('Connected to Redis Cluster');
+        });
+        
+        this.cluster.on('error', (err) => {
+            console.error('Redis Cluster Error:', err);
+        });
+        
+        this.cluster.on('node error', (err, node) => {
+            console.error(`Node ${node.options.host}:${node.options.port} error:`, err);
+        });
+        
+        this.cluster.on('+node', (node) => {
+            console.log(`Node added: ${node.options.host}:${node.options.port}`);
+        });
+        
+        this.cluster.on('-node', (node) => {
+            console.log(`Node removed: ${node.options.host}:${node.options.port}`);
+        });
+    }
+    
+    async setWithRetry(key, value, maxRetries = 3) {
+        for (let i = 0; i < maxRetries; i++) {
+            try {
+                return await this.cluster.set(key, value);
+            } catch (error) {
+                console.warn(`Attempt ${i + 1} failed:`, error.message);
+                if (i === maxRetries - 1) throw error;
+                await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, i)));
+            }
+        }
+    }
+    
+    async getClusterNodes() {
+        try {
+            const nodes = await this.cluster.cluster('nodes');
+            return nodes.split('\n')
+                .filter(line => line.trim())
+                .map(line => {
+                    const parts = line.split(' ');
+                    return {
+                        id: parts[0],
+                        endpoint: parts[1],
+                        flags: parts[2],
+                        master: parts[3],
+                        ping: parts[4],
+                        pong: parts[5],
+                        epoch: parts[6],
+                        link: parts[7],
+                        slots: parts.slice(8)
+                    };
+                });
+        } catch (error) {
+            console.error('Failed to get cluster nodes:', error);
+            return [];
+        }
+    }
+    
+    async close() {
+        await this.cluster.disconnect();
+    }
+}
+
+// Usage
+const clusterManager = new RedisClusterManager();
+
+async function example() {
+    try {
+        await clusterManager.setWithRetry('user:1000', 'John Doe');
+        const nodes = await clusterManager.getClusterNodes();
+        console.log('Cluster nodes:', nodes);
+    } catch (error) {
+        console.error('Example failed:', error);
+    } finally {
+        await clusterManager.close();
+    }
+}
+
+example();</code></pre>
+        </section>
+
+        <section>
+            <h2>Multi-Key Operations and Hash Tags</h2>
+            
+            <h3>Challenges with Multi-Key Operations</h3>
+            
+            <h4>Cross-Slot Operations</h4>
+            <p>Redis Cluster has limitations with operations involving multiple keys:</p>
+            <ul>
+                <li><strong>Same slot requirement:</strong> Multi-key operations require all keys to be in the same slot</li>
+                <li><strong>No cross-slot transactions:</strong> MULTI/EXEC works only within single slots</li>
+                <li><strong>Limited Lua scripts:</strong> Scripts can only access keys in the same slot</li>
+            </ul>
+
+            <h3>Hash Tags Solution</h3>
+            
+            <h4>How Hash Tags Work</h4>
+            <pre><code># Hash tags use {} to specify which part of key to hash
+user:{1000}:profile  → CRC16("1000") mod 16384 → slot 1337
+user:{1000}:settings → CRC16("1000") mod 16384 → slot 1337  
+user:{1000}:sessions → CRC16("1000") mod 16384 → slot 1337
+
+# All keys with same hash tag end up on same node
+# Enables multi-key operations for related data</code></pre>
+
+            <h4>Practical Hash Tag Examples</h4>
+            <pre><code># E-commerce application hash tags
+order:{12345}:details
+order:{12345}:items  
+order:{12345}:shipping
+order:{12345}:payment
+
+# User session management
+session:{abc123}:data
+session:{abc123}:permissions
+session:{abc123}:preferences
+
+# Gaming leaderboards by region
+leaderboard:{us-east}:daily
+leaderboard:{us-east}:weekly
+leaderboard:{us-east}:monthly
+
+# Multi-tenant application
+tenant:{company1}:users
+tenant:{company1}:settings
+tenant:{company1}:billing</code></pre>
+
+            <h3>Best Practices for Key Design</h3>
+            
+            <h4>Effective Hash Tag Strategy</h4>
+            <pre><code># Good: Balanced distribution with related grouping
+user:{user_id}:profile     # Groups user data together
+user:{user_id}:sessions    
+user:{user_id}:preferences
+
+# Bad: Creates hotspots  
+all_users:profile:{user_id}   # All keys go to same slot
+all_users:sessions:{user_id}
+
+# Good: Geographic distribution
+events:{region}:{date}:summary
+events:{region}:{date}:details
+
+# Bad: Uneven distribution
+events:global:{region}:{date}  # All events in one slot</code></pre>
+
+            <h4>Monitoring Key Distribution</h4>
+            <pre><code>#!/bin/bash
+# Script to analyze key distribution across cluster
+
+CLUSTER_HOST="192.168.1.101"
+CLUSTER_PORT="7000"
+CLUSTER_AUTH="cluster_password"
+
+analyze_key_distribution() {
+    echo "Analyzing key distribution across cluster..."
+    
+    # Get all master nodes
+    masters=$(redis-cli -h $CLUSTER_HOST -p $CLUSTER_PORT -a $CLUSTER_AUTH \
+              CLUSTER NODES | grep master | awk '{print $2}')
+    
+    total_keys=0
+    for master in $masters; do
+        host=$(echo $master | cut -d: -f1)
+        port=$(echo $master | cut -d: -f2)
+        
+        # Get key count for this node
+        keys=$(redis-cli -h $host -p $port -a $CLUSTER_AUTH DBSIZE)
+        total_keys=$((total_keys + keys))
+        
+        echo "Master $host:$port has $keys keys"
+        
+        # Sample some keys to check distribution
+        sample_keys=$(redis-cli -h $host -p $port -a $CLUSTER_AUTH \
+                     RANDOMKEY | head -10)
+        
+        echo "Sample keys on $host:$port:"
+        echo "$sample_keys" | while read key; do
+            if [ -n "$key" ]; then
+                slot=$(redis-cli -h $CLUSTER_HOST -p $CLUSTER_PORT -a $CLUSTER_AUTH \
+                       CLUSTER KEYSLOT "$key")
+                echo "  $key → slot $slot"
+            fi
+        done
+        echo
+    done
+    
+    echo "Total keys in cluster: $total_keys"
+    
+    # Calculate expected keys per node
+    master_count=$(echo "$masters" | wc -l)
+    expected_per_node=$((total_keys / master_count))
+    echo "Expected keys per master: $expected_per_node"
+}
+
+analyze_key_distribution</code></pre>
+        </section>
+
+        <section>
+            <h2>Monitoring and Troubleshooting</h2>
+            
+            <h3>Cluster Health Monitoring</h3>
+            
+            <h4>Essential Monitoring Script</h4>
+            <pre><code>#!/bin/bash
+# Comprehensive Redis Cluster monitoring script
+
+CLUSTER_NODES=("192.168.1.101:7000" "192.168.1.102:7000" "192.168.1.103:7000")
+CLUSTER_AUTH="cluster_password"
+LOG_FILE="/var/log/redis/cluster_monitor.log"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a $LOG_FILE
+}
+
+check_cluster_state() {
+    log "=== Checking Cluster State ==="
+    
+    for node in "${CLUSTER_NODES[@]}"; do
+        host=$(echo $node | cut -d: -f1)
+        port=$(echo $node | cut -d: -f2)
+        
+        # Test connectivity
+        if redis-cli -h $host -p $port -a $CLUSTER_AUTH ping >/dev/null 2>&1; then
+            log "✓ Node $node is responsive"
+            
+            # Check cluster state
+            state=$(redis-cli -h $host -p $port -a $CLUSTER_AUTH \
+                   CLUSTER INFO | grep cluster_state | cut -d: -f2 | tr -d '\r')
+            
+            if [ "$state" = "ok" ]; then
+                log "✓ Cluster state OK from $node perspective"
+            else
+                log "✗ Cluster state $state from $node perspective"
+            fi
+        else
+            log "✗ Node $node is not responsive"
+        fi
+    done
+}
+
+check_slot_coverage() {
+    log "=== Checking Slot Coverage ==="
+    
+    # Use first responsive node
+    for node in "${CLUSTER_NODES[@]}"; do
+        host=$(echo $node | cut -d: -f1)
+        port=$(echo $node | cut -d: -f2)
+        
+        if redis-cli -h $host -p $port -a $CLUSTER_AUTH ping >/dev/null 2>&1; then
+            slots_info=$(redis-cli -h $host -p $port -a $CLUSTER_AUTH CLUSTER INFO)
+            
+            assigned=$(echo "$slots_info" | grep cluster_slots_assigned | cut -d: -f2 | tr -d '\r')
+            ok=$(echo "$slots_info" | grep cluster_slots_ok | cut -d: -f2 | tr -d '\r')
+            fail=$(echo "$slots_info" | grep cluster_slots_fail | cut -d: -f2 | tr -d '\r')
+            
+            log "Slots assigned: $assigned/16384"
+            log "Slots OK: $ok"
+            log "Slots failed: $fail"
+            
+            if [ "$assigned" = "16384" ] && [ "$ok" = "16384" ] && [ "$fail" = "0" ]; then
+                log "✓ All slots properly assigned and healthy"
+            else
+                log "✗ Slot coverage issues detected"
+            fi
+            break
+        fi
+    done
+}
+
+check_node_roles() {
+    log "=== Checking Node Roles ==="
+    
+    # Get cluster topology from first responsive node
+    for node in "${CLUSTER_NODES[@]}"; do
+        host=$(echo $node | cut -d: -f1)
+        port=$(echo $node | cut -d: -f2)
+        
+        if redis-cli -h $host -p $port -a $CLUSTER_AUTH ping >/dev/null 2>&1; then
+            nodes_info=$(redis-cli -h $host -p $port -a $CLUSTER_AUTH CLUSTER NODES)
+            
+            masters=0
+            slaves=0
+            
+            echo "$nodes_info" | while read line; do
+                if [[ $line == *"master"* ]]; then
+                    node_ip=$(echo $line | cut -d' ' -f2)
+                    slots=$(echo $line | cut -d' ' -f9-)
+                    log "Master: $node_ip, Slots: $slots"
+                    masters=$((masters + 1))
+                elif [[ $line == *"slave"* ]]; then
+                    node_ip=$(echo $line | cut -d' ' -f2)  
+                    master_id=$(echo $line | cut -d' ' -f4)
+                    log "Slave: $node_ip, Master: $master_id"
+                    slaves=$((slaves + 1))
+                fi
+            done
+            
+            break
+        fi
+    done
+}
+
+check_memory_usage() {
+    log "=== Checking Memory Usage ==="
+    
+    for node in "${CLUSTER_NODES[@]}"; do
+        host=$(echo $node | cut -d: -f1)
+        port=$(echo $node | cut -d: -f2)
+        
+        if redis-cli -h $host -p $port -a $CLUSTER_AUTH ping >/dev/null 2>&1; then
+            memory_info=$(redis-cli -h $host -p $port -a $CLUSTER_AUTH INFO memory)
+            
+            used=$(echo "$memory_info" | grep used_memory_human | cut -d: -f2 | tr -d '\r')
+            max=$(redis-cli -h $host -p $port -a $CLUSTER_AUTH CONFIG GET maxmemory | tail -1)
+            
+            if [ "$max" != "0" ]; then
+                used_bytes=$(echo "$memory_info" | grep used_memory: | cut -d: -f2 | tr -d '\r')
+                usage_percent=$((used_bytes * 100 / max))
+                log "Node $node: Memory $used ($usage_percent% of limit)"
+                
+                if [ $usage_percent -gt 80 ]; then
+                    log "⚠ High memory usage on $node"
+                fi
+            else
+                log "Node $node: Memory $used (no limit set)"
+            fi
+        fi
+    done
+}
+
+check_replication_lag() {
+    log "=== Checking Replication Lag ==="
+    
+    for node in "${CLUSTER_NODES[@]}"; do
+        host=$(echo $node | cut -d: -f1)
+        port=$(echo $node | cut -d: -f2)
+        
+        if redis-cli -h $host -p $port -a $CLUSTER_AUTH ping >/dev/null 2>&1; then
+            repl_info=$(redis-cli -h $host -p $port -a $CLUSTER_AUTH INFO replication)
+            
+            if echo "$repl_info" | grep -q "role:master"; then
+                # Check slaves of this master
+                slaves=$(echo "$repl_info" | grep slave | wc -l)
+                log "Master $node has $slaves slaves"
+                
+                echo "$repl_info" | grep slave | while read slave_line; do
+                    slave_ip=$(echo "$slave_line" | grep -o 'ip=[^,]*' | cut -d= -f2)
+                    lag=$(echo "$slave_line" | grep -o 'lag=[^,]*' | cut -d= -f2)
+                    log "  Slave $slave_ip lag: ${lag}s"
+                    
+                    if [ "$lag" -gt 5 ]; then
+                        log "⚠ High replication lag: $slave_ip ($lag seconds)"
+                    fi
+                done
+            fi
+        fi
+    done
+}
+
+generate_alert() {
+    local alert_level=$1
+    local message=$2
+    
+    log "[$alert_level] $message"
+    
+    # Send to monitoring system (example)
+    # curl -X POST "http://monitoring-system/alerts" \
+    #   -d "{\"level\":\"$alert_level\",\"message\":\"$message\",\"service\":\"redis-cluster\"}"
+}
+
+main() {
+    log "Starting Redis Cluster health check"
+    
+    check_cluster_state
+    check_slot_coverage  
+    check_node_roles
+    check_memory_usage
+    check_replication_lag
+    
+    log "Redis Cluster health check completed"
+}
+
+main</code></pre>
+
+            <h3>Performance Monitoring</h3>
+            
+            <h4>Cluster Performance Metrics</h4>
+            <table border="1">
+                <tr>
+                    <th>Metric</th>
+                    <th>Description</th>
+                    <th>Good Value</th>
+                    <th>Warning Threshold</th>
+                </tr>
+                <tr>
+                    <td>cluster_state</td>
+                    <td>Overall cluster health</td>
+                    <td>ok</td>
+                    <td>fail</td>
+                </tr>
+                <tr>
+                    <td>cluster_slots_ok</td>
+                    <td>Healthy slot count</td>
+                    <td>16384</td>
+                    <td>&lt; 16384</td>
+                </tr>
+                <tr>
+                    <td>connected_slaves</td>
+                    <td>Slaves per master</td>
+                    <td>≥ 1</td>
+                    <td>0</td>
+                </tr>
+                <tr>
+                    <td>master_repl_offset</td>
+                    <td>Replication progress</td>
+                    <td>Increasing</td>
+                    <td>Stalled</td>
+                </tr>
+                <tr>
+                    <td>used_memory_pct</td>
+                    <td>Memory usage percentage</td>
+                    <td>&lt; 70%</td>
+                    <td>&gt; 80%</td>
+                </tr>
+            </table>
+
+            <h3>Common Issues and Solutions</h3>
+            
+            <h4>Cluster State "fail"</h4>
+            <pre><code># Diagnosis steps:
+# 1. Check which slots are failing
+redis-cli -h any_node -p 7000 -a cluster_password CLUSTER NODES
+
+# 2. Look for nodes marked as fail or pfail
+# 3. Check if any master has no slots assigned
+# 4. Verify network connectivity between nodes
+
+# Solutions:
+# - Fix failed nodes
+# - Manually assign slots if needed
+# - Reset cluster state if corrupted</code></pre>
+
+            <h4>High Cross-Slot Operation Errors</h4>
+            <pre><code># Application getting "(error) CROSSSLOT Keys in request don't hash to the same slot"
+
+# Solutions:
+# 1. Use hash tags for related keys
+user:{123}:profile
+user:{123}:settings
+
+# 2. Redesign data model to avoid cross-slot operations
+# 3. Use Lua scripts for atomic multi-key operations within same slot
+
+# 4. Monitor application logs for CROSSSLOT errors
+grep "CROSSSLOT" /var/log/application.log | wc -l</code></pre>
+
+            <h4>Uneven Key Distribution</h4>
+            <pre><code># Check key distribution across nodes
+redis-cli --cluster check 192.168.1.101:7000 -a cluster_password
+
+# Rebalance if needed
+redis-cli --cluster rebalance 192.168.1.101:7000 -a cluster_password
+
+# For severe imbalances, manual slot migration may be needed</code></pre>
+        </section>
+
+        <section>
+            <h2>Production Best Practices</h2>
+            
+            <h3>Deployment Architecture</h3>
+            
+            <h4>Recommended Production Setup</h4>
+            <pre><code># Production cluster layout (9 nodes):
+# 3 Masters + 6 Slaves across 3 availability zones
+
+Zone A:           Zone B:           Zone C:
+Master A          Master B          Master C
+Slave B          Slave C           Slave A  
+Slave C          Slave A           Slave B
+
+# Benefits:
+# - Each master has slaves in different zones
+# - Can survive entire zone failure
+# - Geographically distributed for low latency</code></pre>
+
+            <h4>Hardware Specifications</h4>
+            <table border="1">
+                <tr>
+                    <th>Component</th>
+                    <th>Small Cluster</th>
+                    <th>Medium Cluster</th>
+                    <th>Large Cluster</th>
+                </tr>
+                <tr>
+                    <td>CPU</td>
+                    <td>4-8 cores</td>
+                    <td>8-16 cores</td>
+                    <td>16-32 cores</td>
+                </tr>
+                <tr>
+                    <td>RAM</td>
+                    <td>8-16 GB</td>
+                    <td>32-64 GB</td>
+                    <td>128-256 GB</td>
+                </tr>
+                <tr>
+                    <td>Storage</td>
+                    <td>SSD 100+ GB</td>
+                    <td>SSD 500+ GB</td>
+                    <td>NVMe 1+ TB</td>
+                </tr>
+                <tr>
+                    <td>Network</td>
+                    <td>1 Gbps</td>
+                    <td>10 Gbps</td>
+                    <td>25+ Gbps</td>
+                </tr>
+            </table>
+
+            <h3>Configuration Optimization</h3>
+            
+            <h4>Production Cluster Configuration</h4>
+            <pre><code># Optimized redis-cluster.conf for production
+
+# Cluster settings
+cluster-enabled yes
+cluster-node-timeout 15000
+cluster-config-file nodes.conf
+cluster-require-full-coverage yes  # Ensure all slots covered
+
+# Memory management
+maxmemory 14gb  # Leave 2GB for OS on 16GB server
+maxmemory-policy allkeys-lru
+maxmemory-samples 10
+
+# Persistence (both RDB and AOF for safety)
+save 900 1
+save 300 10  
+save 60 1000
+appendonly yes
+appendfsync everysec
+auto-aof-rewrite-percentage 100
+auto-aof-rewrite-min-size 64mb
+
+# Network optimizations
+tcp-keepalive 60
+tcp-backlog 511
+timeout 0
+
+# Client connections
+maxclients 10000
+
+# Performance tuning  
+hash-max-ziplist-entries 512
+hash-max-ziplist-value 64
+list-max-ziplist-size -2
+set-max-intset-entries 512
+zset-max-ziplist-entries 128
+zset-max-ziplist-value 64
+
+# Security
+requirepass production_cluster_password
+masterauth production_cluster_password
+protected-mode yes
+bind 10.0.0.0/8  # Internal network only
+
+# Logging
+loglevel notice
+syslog-enabled yes
+syslog-ident redis-cluster</code></pre>
+
+            <h3>Capacity Planning</h3>
+            
+            <h4>Scaling Decision Matrix</h4>
+            <table border="1">
+                <tr>
+                    <th>Metric</th>
+                    <th>Scale Up (Vertical)</th>
+                    <th>Scale Out (Horizontal)</th>
+                </tr>
+                <tr>
+                    <td>Memory Usage</td>
+                    <td>&gt; 80% on single node</td>
+                    <td>&gt; 80% across cluster</td>
+                </tr>
+                <tr>
+                    <td>CPU Usage</td>
+                    <td>&gt; 70% sustained</td>
+                    <td>&gt; 70% across all nodes</td>
+                </tr>
+                <tr>
+                    <td>Network I/O</td>
+                    <td>&gt; 80% bandwidth</td>
+                    <td>&gt; 80% across cluster</td>
+                </tr>
+                <tr>
+                    <td>Latency</td>
+                    <td>Single-node bottleneck</td>
+                    <td>Distributed load needed</td>
+                </tr>
+                <tr>
+                    <td>Availability</td>
+                    <td>Add more slaves</td>
+                    <td>Geographic distribution</td>
+                </tr>
+            </table>
+
+            <h4>Scaling Procedures</h4>
+            <pre><code># Horizontal scaling procedure (adding nodes)
+
+# 1. Prepare new nodes
+for node in new_node_1 new_node_2; do
+    ssh redis@$node "redis-server /etc/redis/redis-cluster.conf --daemonize yes"
+done
+
+# 2. Add nodes to cluster  
+redis-cli --cluster add-node new_node_1:7000 existing_node:7000 -a password
+redis-cli --cluster add-node new_node_2:7000 existing_node:7000 --cluster-slave -a password
+
+# 3. Rebalance cluster
+redis-cli --cluster rebalance existing_node:7000 -a password
+
+# 4. Verify cluster health
+redis-cli --cluster check existing_node:7000 -a password
+
+# 5. Update application configuration to include new nodes
+# 6. Monitor performance improvement</code></pre>
+
+            <h3>Backup and Disaster Recovery</h3>
+            
+            <h4>Cluster Backup Strategy</h4>
+            <pre><code>#!/bin/bash
+# Redis Cluster backup script
+
+CLUSTER_NODES=("192.168.1.101:7000" "192.168.1.102:7000" "192.168.1.103:7000")
+BACKUP_DIR="/backup/redis-cluster/$(date +%Y%m%d_%H%M%S)"
+CLUSTER_AUTH="cluster_password"
+
+mkdir -p "$BACKUP_DIR"
+
+backup_cluster() {
+    log "Starting cluster backup to $BACKUP_DIR"
+    
+    # Backup each master node
+    for node in "${CLUSTER_NODES[@]}"; do
+        host=$(echo $node | cut -d: -f1)
+        port=$(echo $node | cut -d: -f2)
+        
+        # Check if this is a master
+        role=$(redis-cli -h $host -p $port -a $CLUSTER_AUTH INFO replication | grep role:master)
+        
+        if [ -n "$role" ]; then
+            log "Backing up master $node"
+            
+            # Trigger background save
+            redis-cli -h $host -p $port -a $CLUSTER_AUTH BGSAVE
+            
+            # Wait for save to complete
+            while [ "$(redis-cli -h $host -p $port -a $CLUSTER_AUTH LASTSAVE)" = "$(redis-cli -h $host -p $port -a $CLUSTER_AUTH LASTSAVE)" ]; do
+                sleep 2
+            done
+            
+            # Copy RDB file
+            scp redis@$host:/var/lib/redis/dump.rdb "$BACKUP_DIR/dump_${host}_${port}.rdb"
+            
+            # Backup cluster configuration
+            scp redis@$host:/var/lib/redis/nodes.conf "$BACKUP_DIR/nodes_${host}_${port}.conf"
+        fi
+    done
+    
+    # Save cluster topology
+    redis-cli -h $(echo ${CLUSTER_NODES[0]} | cut -d: -f1) \
+              -p $(echo ${CLUSTER_NODES[0]} | cut -d: -f2) \
+              -a $CLUSTER_AUTH CLUSTER NODES > "$BACKUP_DIR/cluster_topology.txt"
+    
+    log "Cluster backup completed"
+}
+
+backup_cluster</code></pre>
+        </section>
+
+        <section>
+            <h2>Next Steps</h2>
+            <p>With Redis Cluster mastery under your belt, you now have the foundation for building massively scalable Redis deployments. In the next posts of this series, we'll explore:</p>
+            <ul>
+                <li><strong>Real-time Messaging with Redis Pub/Sub:</strong> Building event-driven applications and real-time features</li>
+                <li><strong>Redis Transactions and Pipelining:</strong> Ensuring data consistency and optimizing performance</li>
+                <li><strong>Server-side Programming with Lua Scripts:</strong> Advanced operations and custom functionality</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Key Takeaways</h2>
+            <ul>
+                <li>Redis Cluster provides automatic sharding across multiple nodes for horizontal scaling</li>
+                <li>16,384 hash slots distribute data evenly across the cluster</li>
+                <li>Hash tags allow related keys to be stored on the same node for multi-key operations</li>
+                <li>Minimum production setup requires 6 nodes (3 masters + 3 slaves)</li>
+                <li>Client libraries must be cluster-aware to handle redirections and topology changes</li>
+                <li>Cross-slot operations are limited; design your data model accordingly</li>
+                <li>Regular rebalancing ensures even data distribution as the cluster grows</li>
+                <li>Comprehensive monitoring is essential for cluster health and performance</li>
+                <li>Geographic distribution of nodes improves availability and latency</li>
+                <li>Proper capacity planning prevents hotspots and performance degradation</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Practice Exercises</h2>
+            <ol>
+                <li>Set up a 6-node Redis Cluster with proper replication</li>
+                <li>Implement cluster-aware client code in your preferred language</li>
+                <li>Design a key naming strategy using hash tags for your application</li>
+                <li>Practice adding and removing nodes from a running cluster</li>
+                <li>Create comprehensive monitoring for cluster health and performance</li>
+                <li>Test cluster behavior during various failure scenarios</li>
+                <li>Implement automated backup and recovery procedures</li>
+                <li>Benchmark cluster performance vs single-node Redis</li>
+            </ol>
+        </section>
+
+        <section>
+            <h2>Further Reading</h2>
+            <ul>
+                <li><a href="https://redis.io/topics/cluster-tutorial">Official Redis Cluster Tutorial</a></li>
+                <li><a href="https://redis.io/topics/cluster-spec">Redis Cluster Specification</a></li>
+                <li><a href="https://redis.io/commands#cluster">Redis Cluster Commands Reference</a></li>
+                <li><a href="https://redis.io/clients">Cluster-Aware Client Libraries</a></li>
+                <li><a href="https://redis.io/topics/partitioning">Redis Partitioning Guide</a></li>
+                <li><a href="https://redis.io/topics/cluster-administration">Cluster Administration Guide</a></li>
+            </ul>
+        </section>
+    </main>
+
+    <footer>
+        <hr>
+        <p><em>This is the sixth post in our comprehensive Redis series. You now have the knowledge to implement and manage large-scale Redis Cluster deployments.</em></p>
+        <p><strong>Previous:</strong> <a href="05-redis-replication-high-availability.html">Redis Replication and High Availability</a></p>
+        <p><strong>Next up:</strong> Real-time Messaging with Redis Pub/Sub</p>
+    </footer>
+</body>
+</html>

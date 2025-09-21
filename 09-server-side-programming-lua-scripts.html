@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Server-side Programming with Lua Scripts: Advanced Redis Operations</title>
+</head>
+<body>
+    <header>
+        <h1>Server-side Programming with Lua Scripts: Advanced Redis Operations</h1>
+        <p><em>Master Lua scripting for atomic operations, custom commands, and advanced Redis functionality</em></p>
+        <p><strong>Published:</strong> Blog Post #9 of Redis Mastery Series</p>
+    </header>
+
+    <main>
+        <section>
+            <h2>Introduction</h2>
+            <p>Redis Lua scripting provides a powerful way to execute complex operations atomically on the server side. Unlike transactions that queue commands, Lua scripts run as single atomic operations, enabling complex logic, conditional operations, and custom functionality that would be impossible or inefficient with regular Redis commands.</p>
+        </section>
+
+        <section>
+            <h2>Lua Scripting Basics</h2>
+            
+            <h3>Basic Script Execution</h3>
+            <pre><code># Simple Lua script
+EVAL "return 'Hello, Redis Lua!'" 0
+
+# Script with key and argument
+EVAL "return redis.call('SET', KEYS[1], ARGV[1])" 1 mykey myvalue
+
+# Conditional operations
+EVAL "
+local current = redis.call('GET', KEYS[1])
+if current == ARGV[1] then
+    return redis.call('SET', KEYS[1], ARGV[2])
+else
+    return nil
+end
+" 1 mykey expected_value new_value</code></pre>
+
+            <h3>Script Management</h3>
+            <pre><code># Load script and get SHA
+SCRIPT LOAD "return 'Hello, World!'"
+# Returns: "1234567890abcdef..."
+
+# Execute by SHA
+EVALSHA 1234567890abcdef 0
+
+# Check if script exists
+SCRIPT EXISTS 1234567890abcdef
+
+# Flush all scripts
+SCRIPT FLUSH</code></pre>
+        </section>
+
+        <section>
+            <h2>Practical Lua Script Examples</h2>
+            
+            <h3>Rate Limiting Script</h3>
+            <pre><code>-- rate_limit.lua
+local key = KEYS[1]
+local window = tonumber(ARGV[1])
+local limit = tonumber(ARGV[2])
+
+local current = redis.call('INCR', key)
+if current == 1 then
+    redis.call('EXPIRE', key, window)
+end
+
+if current > limit then
+    return {0, current, redis.call('TTL', key)}
+else
+    return {1, current, redis.call('TTL', key)}
+end</code></pre>
+
+            <h3>Atomic Counter with Maximum</h3>
+            <pre><code>-- safe_increment.lua
+local key = KEYS[1]
+local increment = tonumber(ARGV[1])
+local maximum = tonumber(ARGV[2])
+
+local current = redis.call('GET', key) or 0
+current = tonumber(current)
+
+if current + increment <= maximum then
+    return redis.call('INCRBY', key, increment)
+else
+    return nil
+end</code></pre>
+
+            <h3>Conditional Set with TTL</h3>
+            <pre><code>-- conditional_set.lua
+local key = KEYS[1]
+local value = ARGV[1]
+local ttl = tonumber(ARGV[2])
+local condition_key = KEYS[2]
+local expected_value = ARGV[3]
+
+local current = redis.call('GET', condition_key)
+if current == expected_value then
+    redis.call('SET', key, value)
+    if ttl > 0 then
+        redis.call('EXPIRE', key, ttl)
+    end
+    return 1
+else
+    return 0
+end</code></pre>
+        </section>
+
+        <section>
+            <h2>Python Integration</h2>
+            <pre><code>import redis
+
+class LuaScriptManager:
+    def __init__(self, redis_client):
+        self.redis = redis_client
+        self.scripts = {}
+    
+    def load_script(self, name: str, script: str):
+        """Load and cache Lua script"""
+        script_obj = self.redis.register_script(script)
+        self.scripts[name] = script_obj
+        return script_obj
+    
+    def rate_limit(self, key: str, window: int, limit: int):
+        """Rate limiting with Lua script"""
+        script = """
+        local key = KEYS[1]
+        local window = tonumber(ARGV[1])
+        local limit = tonumber(ARGV[2])
+        
+        local current = redis.call('INCR', key)
+        if current == 1 then
+            redis.call('EXPIRE', key, window)
+        end
+        
+        return {current, current <= limit and 1 or 0}
+        """
+        
+        if 'rate_limit' not in self.scripts:
+            self.load_script('rate_limit', script)
+        
+        result = self.scripts['rate_limit'](keys=[key], args=[window, limit])
+        return {'count': result[0], 'allowed': bool(result[1])}
+
+# Usage
+redis_client = redis.Redis(decode_responses=True)
+lua_manager = LuaScriptManager(redis_client)
+
+# Rate limit API calls
+result = lua_manager.rate_limit('api:user:123', 60, 100)
+print(f"Calls: {result['count']}, Allowed: {result['allowed']}")</code></pre>
+        </section>
+
+        <section>
+            <h2>Advanced Patterns</h2>
+            
+            <h3>Distributed Locking</h3>
+            <pre><code>-- acquire_lock.lua
+local key = KEYS[1]
+local value = ARGV[1]
+local ttl = tonumber(ARGV[2])
+
+if redis.call('SET', key, value, 'NX', 'EX', ttl) then
+    return 1
+else
+    return 0
+end
+
+-- release_lock.lua
+local key = KEYS[1]
+local value = ARGV[1]
+
+if redis.call('GET', key) == value then
+    return redis.call('DEL', key)
+else
+    return 0
+end</code></pre>
+
+            <h3>Multi-Key Operations</h3>
+            <pre><code>-- transfer_credits.lua
+local from_key = KEYS[1]
+local to_key = KEYS[2]
+local amount = tonumber(ARGV[1])
+
+local from_balance = tonumber(redis.call('GET', from_key) or 0)
+local to_balance = tonumber(redis.call('GET', to_key) or 0)
+
+if from_balance >= amount then
+    redis.call('SET', from_key, from_balance - amount)
+    redis.call('SET', to_key, to_balance + amount)
+    return {1, from_balance - amount, to_balance + amount}
+else
+    return {0, from_balance, to_balance}
+end</code></pre>
+        </section>
+
+        <section>
+            <h2>Best Practices</h2>
+            <ul>
+                <li>Keep scripts atomic and deterministic</li>
+                <li>Use KEYS[] for keys, ARGV[] for values</li>
+                <li>Handle nil values properly</li>
+                <li>Minimize script execution time</li>
+                <li>Cache script SHAs for performance</li>
+                <li>Use local variables for better performance</li>
+                <li>Test scripts thoroughly before production</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Key Takeaways</h2>
+            <ul>
+                <li>Lua scripts execute atomically on Redis server</li>
+                <li>Scripts can implement complex conditional logic</li>
+                <li>Use EVALSHA for better performance with cached scripts</li>
+                <li>Scripts are perfect for multi-key atomic operations</li>
+                <li>Proper error handling is crucial for production scripts</li>
+            </ul>
+        </section>
+    </main>
+
+    <footer>
+        <hr>
+        <p><strong>Previous:</strong> <a href="08-redis-transactions-pipelining.html">Redis Transactions and Pipelining</a></p>
+        <p><strong>Next up:</strong> Extending Redis with Modules</p>
+    </footer>
+</body>
+</html>

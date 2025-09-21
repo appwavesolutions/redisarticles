@@ -1,0 +1,1507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time Messaging with Redis Pub/Sub: Building Event-Driven Applications</title>
+</head>
+<body>
+    <header>
+        <h1>Real-time Messaging with Redis Pub/Sub: Building Event-Driven Applications</h1>
+        <p><em>Master Redis Pub/Sub, Streams, and advanced messaging patterns for real-time applications</em></p>
+        <p><strong>Published:</strong> Blog Post #7 of Redis Mastery Series</p>
+    </header>
+
+    <main>
+        <section>
+            <h2>Introduction</h2>
+            <p>Modern applications require real-time communication capabilities—from live chat systems and notifications to real-time analytics and event-driven architectures. Redis provides powerful messaging primitives that make building these real-time features straightforward and scalable.</p>
+            
+            <p>In this comprehensive guide, we'll explore Redis's messaging capabilities, including the classic Pub/Sub system, the advanced Streams API, and practical patterns for building robust real-time applications. You'll learn how to implement everything from simple notifications to complex event sourcing systems.</p>
+            
+            <p>By the end of this article, you'll have the knowledge to build sophisticated real-time messaging systems that can handle millions of messages with low latency and high reliability.</p>
+        </section>
+
+        <section>
+            <h2>Redis Pub/Sub Fundamentals</h2>
+            
+            <h3>Understanding Publish/Subscribe</h3>
+            <p>Redis Pub/Sub implements the publisher-subscriber messaging pattern where:</p>
+            <ul>
+                <li><strong>Publishers</strong> send messages to channels without knowing who receives them</li>
+                <li><strong>Subscribers</strong> listen to channels and receive all messages published to those channels</li>
+                <li><strong>Channels</strong> act as message topics or categories</li>
+                <li><strong>Decoupling</strong> publishers and subscribers don't need to know about each other</li>
+            </ul>
+
+            <h3>Basic Pub/Sub Commands</h3>
+            
+            <h4>Publishing Messages</h4>
+            <pre><code># Publish message to a channel
+PUBLISH news:sports "Team wins championship!"
+PUBLISH notifications:user:1000 "You have a new message"
+PUBLISH events:order:created '{"order_id": 12345, "user_id": 1000, "total": 99.99}'
+
+# Returns number of subscribers that received the message
+PUBLISH chat:room:general "Hello everyone!"
+# (integer) 3  # 3 subscribers received the message</code></pre>
+
+            <h4>Subscribing to Channels</h4>
+            <pre><code># Subscribe to specific channels
+SUBSCRIBE news:sports news:technology
+# Reading messages... (press Ctrl-C to quit)
+# 1) "subscribe"
+# 2) "news:sports"  
+# 3) (integer) 1
+
+# Subscribe to pattern-based channels
+PSUBSCRIBE news:* notifications:user:*
+# Receives messages from news:sports, news:tech, notifications:user:1000, etc.
+
+# Unsubscribe from channels
+UNSUBSCRIBE news:sports
+PUNSUBSCRIBE news:*</code></pre>
+
+            <h4>Channel Information</h4>
+            <pre><code># List active channels (channels with subscribers)
+PUBSUB CHANNELS
+PUBSUB CHANNELS news:*  # Filter by pattern
+
+# Count subscribers for channels
+PUBSUB NUMSUB news:sports news:technology
+# 1) "news:sports"
+# 2) (integer) 5
+# 3) "news:technology"  
+# 4) (integer) 12
+
+# Count pattern subscriptions
+PUBSUB NUMPAT
+# (integer) 3</code></pre>
+
+            <h3>Pub/Sub Characteristics</h3>
+            <table border="1">
+                <tr>
+                    <th>Aspect</th>
+                    <th>Behavior</th>
+                    <th>Implication</th>
+                </tr>
+                <tr>
+                    <td>Message Delivery</td>
+                    <td>Fire-and-forget</td>
+                    <td>No persistence, no delivery guarantees</td>
+                </tr>
+                <tr>
+                    <td>Subscriber Connection</td>
+                    <td>Must be online</td>
+                    <td>Offline subscribers miss messages</td>
+                </tr>
+                <tr>
+                    <td>Message Ordering</td>
+                    <td>Preserved per channel</td>
+                    <td>FIFO delivery within each channel</td>
+                </tr>
+                <tr>
+                    <td>Scalability</td>
+                    <td>High throughput</td>
+                    <td>Minimal memory overhead</td>
+                </tr>
+                <tr>
+                    <td>Reliability</td>
+                    <td>At-most-once delivery</td>
+                    <td>Messages can be lost</td>
+                </tr>
+            </table>
+        </section>
+
+        <section>
+            <h2>Building Real-time Applications</h2>
+            
+            <h3>Live Chat System</h3>
+            
+            <h4>Python Chat Server</h4>
+            <pre><code>import redis
+import asyncio
+import websockets
+import json
+import logging
+from datetime import datetime
+
+class ChatServer:
+    def __init__(self):
+        self.redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
+        self.websocket_clients = {}
+        
+    async def handle_websocket(self, websocket, path):
+        """Handle new WebSocket connection"""
+        try:
+            # Register client
+            client_id = id(websocket)
+            self.websocket_clients[client_id] = websocket
+            
+            # Send welcome message
+            await websocket.send(json.dumps({
+                'type': 'system',
+                'message': 'Connected to chat server',
+                'timestamp': datetime.now().isoformat()
+            }))
+            
+            # Handle messages from client
+            async for message in websocket:
+                await self.handle_client_message(client_id, message)
+                
+        except websockets.exceptions.ConnectionClosed:
+            pass
+        finally:
+            # Cleanup
+            if client_id in self.websocket_clients:
+                del self.websocket_clients[client_id]
+    
+    async def handle_client_message(self, client_id, message):
+        """Process message from WebSocket client"""
+        try:
+            data = json.loads(message)
+            msg_type = data.get('type')
+            
+            if msg_type == 'join_room':
+                await self.join_room(client_id, data['room'])
+            elif msg_type == 'leave_room':  
+                await self.leave_room(client_id, data['room'])
+            elif msg_type == 'chat_message':
+                await self.send_chat_message(data['room'], data['username'], data['message'])
+                
+        except json.JSONDecodeError:
+            logging.error(f"Invalid JSON from client {client_id}")
+    
+    async def join_room(self, client_id, room):
+        """Subscribe client to chat room"""
+        # In production, track room subscriptions per client
+        channel = f"chat:room:{room}"
+        
+        # Start Redis subscription for this room if not already listening
+        if not hasattr(self, f'_subscriber_{room}'):
+            asyncio.create_task(self.redis_subscriber(room))
+    
+    async def send_chat_message(self, room, username, message):
+        """Publish chat message to room"""
+        chat_message = {
+            'type': 'chat_message',
+            'room': room,
+            'username': username,
+            'message': message,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        # Publish to Redis
+        channel = f"chat:room:{room}"
+        self.redis_client.publish(channel, json.dumps(chat_message))
+        
+        # Also store in chat history (using Lists)
+        history_key = f"chat:history:{room}"
+        self.redis_client.lpush(history_key, json.dumps(chat_message))
+        self.redis_client.ltrim(history_key, 0, 99)  # Keep last 100 messages
+    
+    async def redis_subscriber(self, room):
+        """Listen for Redis messages and forward to WebSocket clients"""
+        pubsub = self.redis_client.pubsub()
+        channel = f"chat:room:{room}"
+        pubsub.subscribe(channel)
+        
+        try:
+            for message in pubsub.listen():
+                if message['type'] == 'message':
+                    # Forward to all WebSocket clients in this room
+                    await self.broadcast_to_room(room, message['data'])
+        except Exception as e:
+            logging.error(f"Redis subscriber error: {e}")
+        finally:
+            pubsub.close()
+    
+    async def broadcast_to_room(self, room, message):
+        """Send message to all WebSocket clients in room"""
+        disconnected_clients = []
+        
+        for client_id, websocket in self.websocket_clients.items():
+            try:
+                await websocket.send(message)
+            except websockets.exceptions.ConnectionClosed:
+                disconnected_clients.append(client_id)
+        
+        # Clean up disconnected clients
+        for client_id in disconnected_clients:
+            del self.websocket_clients[client_id]
+
+# Start server
+async def main():
+    chat_server = ChatServer()
+    
+    # Start WebSocket server
+    start_server = websockets.serve(
+        chat_server.handle_websocket, 
+        "localhost", 
+        8765
+    )
+    
+    print("Chat server started on ws://localhost:8765")
+    await start_server
+
+if __name__ == "__main__":
+    asyncio.run(main())</code></pre>
+
+            <h4>JavaScript Chat Client</h4>
+            <pre><code>class ChatClient {
+    constructor(serverUrl) {
+        this.serverUrl = serverUrl;
+        this.websocket = null;
+        this.currentRoom = null;
+        this.username = null;
+    }
+    
+    connect() {
+        return new Promise((resolve, reject) => {
+            this.websocket = new WebSocket(this.serverUrl);
+            
+            this.websocket.onopen = () => {
+                console.log('Connected to chat server');
+                resolve();
+            };
+            
+            this.websocket.onmessage = (event) => {
+                const message = JSON.parse(event.data);
+                this.handleMessage(message);
+            };
+            
+            this.websocket.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                reject(error);
+            };
+            
+            this.websocket.onclose = () => {
+                console.log('Disconnected from chat server');
+                this.reconnect();
+            };
+        });
+    }
+    
+    reconnect() {
+        setTimeout(() => {
+            console.log('Attempting to reconnect...');
+            this.connect().then(() => {
+                if (this.currentRoom) {
+                    this.joinRoom(this.currentRoom);
+                }
+            });
+        }, 3000);
+    }
+    
+    joinRoom(roomName) {
+        this.currentRoom = roomName;
+        this.send({
+            type: 'join_room',
+            room: roomName
+        });
+    }
+    
+    sendMessage(message) {
+        if (!this.username) {
+            alert('Please set your username first');
+            return;
+        }
+        
+        this.send({
+            type: 'chat_message',
+            room: this.currentRoom,
+            username: this.username,
+            message: message
+        });
+    }
+    
+    send(data) {
+        if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+            this.websocket.send(JSON.stringify(data));
+        }
+    }
+    
+    handleMessage(message) {
+        switch (message.type) {
+            case 'system':
+                this.displaySystemMessage(message.message);
+                break;
+            case 'chat_message':
+                this.displayChatMessage(message);
+                break;
+        }
+    }
+    
+    displayChatMessage(message) {
+        const chatArea = document.getElementById('chat-messages');
+        const messageElement = document.createElement('div');
+        messageElement.className = 'chat-message';
+        messageElement.innerHTML = `
+            <span class="username">${message.username}:</span>
+            <span class="message">${message.message}</span>
+            <span class="timestamp">${new Date(message.timestamp).toLocaleTimeString()}</span>
+        `;
+        chatArea.appendChild(messageElement);
+        chatArea.scrollTop = chatArea.scrollHeight;
+    }
+    
+    displaySystemMessage(message) {
+        const chatArea = document.getElementById('chat-messages');
+        const messageElement = document.createElement('div');
+        messageElement.className = 'system-message';
+        messageElement.textContent = message;
+        chatArea.appendChild(messageElement);
+    }
+}
+
+// Usage
+const chatClient = new ChatClient('ws://localhost:8765');
+
+document.addEventListener('DOMContentLoaded', () => {
+    chatClient.connect();
+    
+    document.getElementById('username-btn').onclick = () => {
+        const username = document.getElementById('username-input').value;
+        if (username) {
+            chatClient.username = username;
+            document.getElementById('username-section').style.display = 'none';
+            document.getElementById('chat-section').style.display = 'block';
+        }
+    };
+    
+    document.getElementById('join-room-btn').onclick = () => {
+        const room = document.getElementById('room-input').value;
+        if (room) {
+            chatClient.joinRoom(room);
+        }
+    };
+    
+    document.getElementById('send-btn').onclick = () => {
+        const message = document.getElementById('message-input').value;
+        if (message) {
+            chatClient.sendMessage(message);
+            document.getElementById('message-input').value = '';
+        }
+    };
+});</code></pre>
+
+            <h3>Real-time Notifications System</h3>
+            
+            <h4>Notification Publisher</h4>
+            <pre><code>import redis
+import json
+from enum import Enum
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
+
+class NotificationType(Enum):
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+    SUCCESS = "success"
+
+class NotificationService:
+    def __init__(self, redis_host='localhost', redis_port=6379):
+        self.redis_client = redis.Redis(
+            host=redis_host, 
+            port=redis_port, 
+            decode_responses=True
+        )
+    
+    def send_user_notification(self, user_id: int, title: str, message: str, 
+                             notification_type: NotificationType = NotificationType.INFO,
+                             data: Optional[Dict] = None):
+        """Send notification to specific user"""
+        notification = {
+            'id': self.generate_notification_id(),
+            'user_id': user_id,
+            'title': title,
+            'message': message,
+            'type': notification_type.value,
+            'data': data or {},
+            'timestamp': datetime.now().isoformat(),
+            'read': False
+        }
+        
+        # Publish real-time notification
+        channel = f"notifications:user:{user_id}"
+        self.redis_client.publish(channel, json.dumps(notification))
+        
+        # Store notification for persistence
+        self.store_notification(user_id, notification)
+        
+        return notification['id']
+    
+    def send_broadcast_notification(self, title: str, message: str,
+                                  notification_type: NotificationType = NotificationType.INFO,
+                                  target_groups: Optional[List[str]] = None):
+        """Send notification to all users or specific groups"""
+        notification = {
+            'id': self.generate_notification_id(),
+            'title': title,
+            'message': message,
+            'type': notification_type.value,
+            'timestamp': datetime.now().isoformat(),
+            'target_groups': target_groups or []
+        }
+        
+        # Publish to broadcast channel
+        self.redis_client.publish("notifications:broadcast", json.dumps(notification))
+        
+        # Store in broadcast history
+        self.redis_client.lpush("notifications:broadcast:history", json.dumps(notification))
+        self.redis_client.expire("notifications:broadcast:history", 86400 * 7)  # 7 days
+    
+    def send_group_notification(self, group: str, title: str, message: str,
+                              notification_type: NotificationType = NotificationType.INFO):
+        """Send notification to specific group"""
+        notification = {
+            'id': self.generate_notification_id(),
+            'group': group,
+            'title': title,
+            'message': message,
+            'type': notification_type.value,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        channel = f"notifications:group:{group}"
+        self.redis_client.publish(channel, json.dumps(notification))
+    
+    def store_notification(self, user_id: int, notification: Dict):
+        """Store notification for later retrieval"""
+        # Store in user's notification list
+        key = f"notifications:stored:{user_id}"
+        self.redis_client.lpush(key, json.dumps(notification))
+        
+        # Keep only last 100 notifications
+        self.redis_client.ltrim(key, 0, 99)
+        
+        # Set expiration (30 days)
+        self.redis_client.expire(key, 86400 * 30)
+        
+        # Update unread count
+        unread_key = f"notifications:unread:{user_id}"
+        self.redis_client.incr(unread_key)
+        self.redis_client.expire(unread_key, 86400 * 30)
+    
+    def get_user_notifications(self, user_id: int, limit: int = 20) -> List[Dict]:
+        """Get stored notifications for user"""
+        key = f"notifications:stored:{user_id}"
+        notifications = self.redis_client.lrange(key, 0, limit - 1)
+        return [json.loads(notif) for notif in notifications]
+    
+    def mark_notification_read(self, user_id: int, notification_id: str):
+        """Mark specific notification as read"""
+        # In production, you'd want to update the stored notification
+        # For simplicity, we'll just decrement unread count
+        unread_key = f"notifications:unread:{user_id}"
+        current_unread = self.redis_client.get(unread_key)
+        if current_unread and int(current_unread) > 0:
+            self.redis_client.decr(unread_key)
+    
+    def get_unread_count(self, user_id: int) -> int:
+        """Get count of unread notifications"""
+        unread_key = f"notifications:unread:{user_id}"
+        count = self.redis_client.get(unread_key)
+        return int(count) if count else 0
+    
+    def generate_notification_id(self) -> str:
+        """Generate unique notification ID"""
+        return f"notif_{int(datetime.now().timestamp() * 1000)}"
+
+# Usage examples
+def example_usage():
+    notif_service = NotificationService()
+    
+    # Send user-specific notification
+    notif_service.send_user_notification(
+        user_id=1000,
+        title="Order Shipped",
+        message="Your order #12345 has been shipped!",
+        notification_type=NotificationType.SUCCESS,
+        data={"order_id": 12345, "tracking_number": "1Z999AA1234567890"}
+    )
+    
+    # Send broadcast notification
+    notif_service.send_broadcast_notification(
+        title="System Maintenance",
+        message="Scheduled maintenance will occur tonight from 2-4 AM",
+        notification_type=NotificationType.WARNING
+    )
+    
+    # Send group notification
+    notif_service.send_group_notification(
+        group="premium_users",
+        title="New Premium Feature",
+        message="Check out our new advanced analytics dashboard!",
+        notification_type=NotificationType.INFO
+    )</code></pre>
+
+            <h4>Notification Subscriber</h4>
+            <pre><code>import redis
+import json
+import asyncio
+import logging
+from typing import Callable, Dict
+
+class NotificationSubscriber:
+    def __init__(self, redis_host='localhost', redis_port=6379):
+        self.redis_client = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
+        self.pubsub = self.redis_client.pubsub()
+        self.handlers = {}
+        self.running = False
+    
+    def subscribe_to_user(self, user_id: int, handler: Callable[[Dict], None]):
+        """Subscribe to notifications for specific user"""
+        channel = f"notifications:user:{user_id}"
+        self.pubsub.subscribe(channel)
+        self.handlers[channel] = handler
+        logging.info(f"Subscribed to user {user_id} notifications")
+    
+    def subscribe_to_broadcasts(self, handler: Callable[[Dict], None]):
+        """Subscribe to broadcast notifications"""
+        channel = "notifications:broadcast"
+        self.pubsub.subscribe(channel)
+        self.handlers[channel] = handler
+        logging.info("Subscribed to broadcast notifications")
+    
+    def subscribe_to_group(self, group: str, handler: Callable[[Dict], None]):
+        """Subscribe to group notifications"""
+        channel = f"notifications:group:{group}"
+        self.pubsub.subscribe(channel)
+        self.handlers[channel] = handler
+        logging.info(f"Subscribed to group {group} notifications")
+    
+    async def start_listening(self):
+        """Start listening for notifications"""
+        self.running = True
+        logging.info("Starting notification listener")
+        
+        try:
+            for message in self.pubsub.listen():
+                if not self.running:
+                    break
+                    
+                if message['type'] == 'message':
+                    await self.handle_notification(message)
+        except Exception as e:
+            logging.error(f"Error in notification listener: {e}")
+        finally:
+            self.pubsub.close()
+    
+    async def handle_notification(self, message):
+        """Handle incoming notification"""
+        try:
+            channel = message['channel']
+            data = json.loads(message['data'])
+            
+            # Find appropriate handler
+            if channel in self.handlers:
+                handler = self.handlers[channel]
+                
+                # Run handler (could be sync or async)
+                if asyncio.iscoroutinefunction(handler):
+                    await handler(data)
+                else:
+                    handler(data)
+            else:
+                logging.warning(f"No handler for channel: {channel}")
+                
+        except Exception as e:
+            logging.error(f"Error handling notification: {e}")
+    
+    def stop_listening(self):
+        """Stop listening for notifications"""
+        self.running = False
+        logging.info("Stopping notification listener")
+
+# Example handlers
+async def user_notification_handler(notification: Dict):
+    """Handle user-specific notifications"""
+    print(f"User {notification['user_id']} notification:")
+    print(f"  {notification['title']}: {notification['message']}")
+    
+    # Send to user's connected devices (WebSocket, push notification, etc.)
+    await send_to_user_devices(notification['user_id'], notification)
+
+async def broadcast_notification_handler(notification: Dict):
+    """Handle broadcast notifications"""
+    print(f"Broadcast: {notification['title']}: {notification['message']}")
+    
+    # Send to all connected clients
+    await broadcast_to_all_clients(notification)
+
+def group_notification_handler(notification: Dict):
+    """Handle group notifications"""
+    print(f"Group {notification['group']}: {notification['title']}")
+    
+    # Send to group members
+    send_to_group_members(notification['group'], notification)
+
+# Mock functions (implement based on your infrastructure)
+async def send_to_user_devices(user_id: int, notification: Dict):
+    """Send notification to user's devices"""
+    # WebSocket, mobile push, email, etc.
+    pass
+
+async def broadcast_to_all_clients(notification: Dict):
+    """Broadcast to all connected clients"""
+    pass
+
+def send_to_group_members(group: str, notification: Dict):
+    """Send to group members"""
+    pass
+
+# Usage
+async def main():
+    subscriber = NotificationSubscriber()
+    
+    # Subscribe to different notification types
+    subscriber.subscribe_to_user(1000, user_notification_handler)
+    subscriber.subscribe_to_broadcasts(broadcast_notification_handler)
+    subscriber.subscribe_to_group("premium_users", group_notification_handler)
+    
+    # Start listening
+    await subscriber.start_listening()
+
+if __name__ == "__main__":
+    asyncio.run(main())</code></pre>
+        </section>
+
+        <section>
+            <h2>Redis Streams: Advanced Messaging</h2>
+            
+            <h3>Understanding Redis Streams</h3>
+            <p>Redis Streams provide more advanced messaging capabilities compared to Pub/Sub:</p>
+            <ul>
+                <li><strong>Persistence:</strong> Messages are stored and can be replayed</li>
+                <li><strong>Consumer Groups:</strong> Distribute work among multiple consumers</li>
+                <li><strong>Message Acknowledgment:</strong> Ensure messages are processed</li>
+                <li><strong>Message History:</strong> Read from any point in the stream</li>
+                <li><strong>Automatic IDs:</strong> Messages get unique, time-ordered IDs</li>
+            </ul>
+
+            <h3>Stream Basic Operations</h3>
+            
+            <h4>Adding Messages to Streams</h4>
+            <pre><code># Add message to stream
+XADD user:actions * action login user_id 1000 ip 192.168.1.100 timestamp 1703123456
+# Returns: "1703123456789-0" (timestamp-sequence)
+
+# Add with explicit ID
+XADD events 1703123456000-0 type user_signup user_id 2000 email john@example.com
+
+# Add with maxlen to limit stream size
+XADD sensor:temperature MAXLEN ~ 1000 * temp 23.5 humidity 65 location room1
+
+# Add with exact maxlen (more expensive)
+XADD logs MAXLEN = 10000 * level error message "Database connection failed"</code></pre>
+
+            <h4>Reading from Streams</h4>
+            <pre><code># Read all messages from stream
+XRANGE user:actions - +
+
+# Read specific range
+XRANGE user:actions 1703123456000 1703123460000
+
+# Read latest N messages
+XREVRANGE user:actions + - COUNT 10
+
+# Block and read new messages
+XREAD BLOCK 5000 STREAMS user:actions $
+# Blocks for 5 seconds waiting for new messages after last ID
+
+# Read from multiple streams
+XREAD BLOCK 0 STREAMS events user:actions sensor:data $ $ $</code></pre>
+
+            <h3>Consumer Groups</h3>
+            
+            <h4>Creating and Managing Consumer Groups</h4>
+            <pre><code># Create consumer group
+XGROUP CREATE user:actions analytics $ MKSTREAM
+# Creates group "analytics" starting from the end of stream
+
+# Create group starting from beginning
+XGROUP CREATE user:actions reporting 0
+
+# Read as part of consumer group
+XREADGROUP GROUP analytics worker1 COUNT 5 STREAMS user:actions >
+# Returns messages not yet delivered to this group
+
+# Acknowledge processed messages
+XACK user:actions analytics 1703123456789-0 1703123456790-0
+
+# Check pending messages
+XPENDING user:actions analytics
+
+# Get detailed pending info
+XPENDING user:actions analytics - + 10 worker1</code></pre>
+
+            <h4>Event Processing System with Streams</h4>
+            <pre><code>import redis
+import json
+import time
+import logging
+import asyncio
+from typing import Dict, List, Callable
+from dataclasses import dataclass
+
+@dataclass
+class StreamMessage:
+    id: str
+    fields: Dict[str, str]
+    timestamp: float
+
+class EventProcessor:
+    def __init__(self, redis_host='localhost', redis_port=6379):
+        self.redis_client = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
+        self.running = False
+        self.handlers = {}
+    
+    def register_handler(self, event_type: str, handler: Callable[[StreamMessage], bool]):
+        """Register handler for specific event type"""
+        self.handlers[event_type] = handler
+    
+    async def process_events(self, stream_name: str, group_name: str, consumer_name: str):
+        """Process events from stream using consumer group"""
+        self.running = True
+        
+        # Create consumer group if it doesn't exist
+        try:
+            self.redis_client.xgroup_create(stream_name, group_name, '0', mkstream=True)
+        except redis.exceptions.ResponseError as e:
+            if "BUSYGROUP" not in str(e):
+                raise
+        
+        logging.info(f"Starting event processor: {consumer_name} in group {group_name}")
+        
+        while self.running:
+            try:
+                # Read messages from stream
+                messages = self.redis_client.xreadgroup(
+                    group_name,
+                    consumer_name,
+                    {stream_name: '>'},
+                    count=10,
+                    block=1000  # Block for 1 second
+                )
+                
+                if messages:
+                    await self.handle_messages(stream_name, group_name, messages[0][1])
+                    
+            except Exception as e:
+                logging.error(f"Error processing events: {e}")
+                await asyncio.sleep(1)
+    
+    async def handle_messages(self, stream_name: str, group_name: str, messages: List):
+        """Handle batch of messages"""
+        processed_ids = []
+        
+        for message_id, fields in messages:
+            try:
+                # Convert to StreamMessage
+                stream_msg = StreamMessage(
+                    id=message_id,
+                    fields=fields,
+                    timestamp=float(message_id.split('-')[0]) / 1000
+                )
+                
+                # Process based on event type
+                event_type = fields.get('event_type', 'unknown')
+                
+                if event_type in self.handlers:
+                    success = await self.call_handler(self.handlers[event_type], stream_msg)
+                    
+                    if success:
+                        processed_ids.append(message_id)
+                        logging.info(f"Processed event {message_id}: {event_type}")
+                    else:
+                        logging.warning(f"Failed to process event {message_id}: {event_type}")
+                else:
+                    logging.warning(f"No handler for event type: {event_type}")
+                    processed_ids.append(message_id)  # Ack unknown events to avoid reprocessing
+                    
+            except Exception as e:
+                logging.error(f"Error handling message {message_id}: {e}")
+        
+        # Acknowledge processed messages
+        if processed_ids:
+            self.redis_client.xack(stream_name, group_name, *processed_ids)
+    
+    async def call_handler(self, handler: Callable, message: StreamMessage) -> bool:
+        """Call event handler (sync or async)"""
+        try:
+            if asyncio.iscoroutinefunction(handler):
+                return await handler(message)
+            else:
+                return handler(message)
+        except Exception as e:
+            logging.error(f"Handler error: {e}")
+            return False
+    
+    def stop(self):
+        """Stop processing events"""
+        self.running = False
+
+# Event handlers
+async def handle_user_signup(message: StreamMessage) -> bool:
+    """Handle user signup events"""
+    user_id = message.fields.get('user_id')
+    email = message.fields.get('email')
+    
+    try:
+        # Send welcome email
+        await send_welcome_email(user_id, email)
+        
+        # Create user profile
+        await create_user_profile(user_id)
+        
+        # Track analytics
+        await track_signup_event(user_id, message.timestamp)
+        
+        return True
+    except Exception as e:
+        logging.error(f"Error handling signup for user {user_id}: {e}")
+        return False
+
+async def handle_order_created(message: StreamMessage) -> bool:
+    """Handle order creation events"""
+    order_id = message.fields.get('order_id')
+    user_id = message.fields.get('user_id')
+    total = float(message.fields.get('total', 0))
+    
+    try:
+        # Send order confirmation
+        await send_order_confirmation(order_id, user_id)
+        
+        # Update inventory
+        await update_inventory(order_id)
+        
+        # Process payment
+        await process_payment(order_id, total)
+        
+        # Update analytics
+        await track_order_event(order_id, user_id, total)
+        
+        return True
+    except Exception as e:
+        logging.error(f"Error handling order {order_id}: {e}")
+        return False
+
+def handle_page_view(message: StreamMessage) -> bool:
+    """Handle page view events (synchronous)"""
+    user_id = message.fields.get('user_id')
+    page = message.fields.get('page')
+    
+    try:
+        # Update user activity
+        update_user_activity(user_id, page, message.timestamp)
+        
+        # Update page analytics
+        update_page_analytics(page)
+        
+        return True
+    except Exception as e:
+        logging.error(f"Error handling page view: {e}")
+        return False
+
+# Mock async functions
+async def send_welcome_email(user_id: str, email: str):
+    # Simulate email sending
+    await asyncio.sleep(0.1)
+    print(f"Welcome email sent to {email}")
+
+async def create_user_profile(user_id: str):
+    await asyncio.sleep(0.05)
+    print(f"User profile created for {user_id}")
+
+async def track_signup_event(user_id: str, timestamp: float):
+    await asyncio.sleep(0.02)
+    print(f"Signup tracked for {user_id}")
+
+async def send_order_confirmation(order_id: str, user_id: str):
+    await asyncio.sleep(0.1)
+    print(f"Order confirmation sent for {order_id}")
+
+async def update_inventory(order_id: str):
+    await asyncio.sleep(0.05)
+    print(f"Inventory updated for order {order_id}")
+
+async def process_payment(order_id: str, total: float):
+    await asyncio.sleep(0.2)
+    print(f"Payment processed for order {order_id}: ${total}")
+
+async def track_order_event(order_id: str, user_id: str, total: float):
+    await asyncio.sleep(0.02)
+    print(f"Order analytics tracked: {order_id}")
+
+def update_user_activity(user_id: str, page: str, timestamp: float):
+    print(f"User {user_id} viewed {page}")
+
+def update_page_analytics(page: str):
+    print(f"Page analytics updated for {page}")
+
+# Usage example
+async def main():
+    processor = EventProcessor()
+    
+    # Register event handlers
+    processor.register_handler('user_signup', handle_user_signup)
+    processor.register_handler('order_created', handle_order_created)
+    processor.register_handler('page_view', handle_page_view)
+    
+    # Start processing events
+    await processor.process_events(
+        stream_name='events',
+        group_name='event_processor',
+        consumer_name='worker1'
+    )
+
+# Event producer example
+def produce_events():
+    """Example of producing events to the stream"""
+    redis_client = redis.Redis(decode_responses=True)
+    
+    # User signup event
+    redis_client.xadd('events', {
+        'event_type': 'user_signup',
+        'user_id': '1000',
+        'email': 'john@example.com',
+        'signup_method': 'email'
+    })
+    
+    # Order created event
+    redis_client.xadd('events', {
+        'event_type': 'order_created',
+        'order_id': '12345',
+        'user_id': '1000',
+        'total': '99.99',
+        'items': '3'
+    })
+    
+    # Page view event
+    redis_client.xadd('events', {
+        'event_type': 'page_view',
+        'user_id': '1000',
+        'page': '/products/laptop',
+        'session_id': 'sess123'
+    })
+
+if __name__ == "__main__":
+    # Run producer and consumer
+    produce_events()
+    asyncio.run(main())</code></pre>
+        </section>
+
+        <section>
+            <h2>Advanced Messaging Patterns</h2>
+            
+            <h3>Message Queue with Priority</h3>
+            
+            <h4>Priority Queue Implementation</h4>
+            <pre><code>import redis
+import json
+import time
+from enum import IntEnum
+from typing import Optional, Dict, Any
+from dataclasses import dataclass, asdict
+
+class Priority(IntEnum):
+    LOW = 1
+    NORMAL = 2  
+    HIGH = 3
+    URGENT = 4
+
+@dataclass
+class QueueMessage:
+    id: str
+    data: Dict[str, Any]
+    priority: Priority
+    created_at: float
+    attempts: int = 0
+    max_attempts: int = 3
+
+class PriorityMessageQueue:
+    def __init__(self, queue_name: str, redis_host='localhost', redis_port=6379):
+        self.queue_name = queue_name
+        self.redis_client = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
+        
+        # Use sorted sets for priority queues
+        self.priority_keys = {
+            Priority.URGENT: f"{queue_name}:urgent",
+            Priority.HIGH: f"{queue_name}:high", 
+            Priority.NORMAL: f"{queue_name}:normal",
+            Priority.LOW: f"{queue_name}:low"
+        }
+        
+        # Processing and failed message keys
+        self.processing_key = f"{queue_name}:processing"
+        self.failed_key = f"{queue_name}:failed"
+        self.message_data_key = f"{queue_name}:data"
+    
+    def enqueue(self, data: Dict[str, Any], priority: Priority = Priority.NORMAL,
+                max_attempts: int = 3) -> str:
+        """Add message to priority queue"""
+        message_id = f"msg_{int(time.time() * 1000000)}"
+        
+        message = QueueMessage(
+            id=message_id,
+            data=data,
+            priority=priority,
+            created_at=time.time(),
+            max_attempts=max_attempts
+        )
+        
+        # Store message data
+        self.redis_client.hset(
+            self.message_data_key,
+            message_id,
+            json.dumps(asdict(message))
+        )
+        
+        # Add to appropriate priority queue (score = timestamp for FIFO within priority)
+        priority_key = self.priority_keys[priority]
+        score = time.time()
+        self.redis_client.zadd(priority_key, {message_id: score})
+        
+        return message_id
+    
+    def dequeue(self, timeout: int = 0) -> Optional[QueueMessage]:
+        """Get next message from highest priority queue"""
+        # Check queues in priority order
+        for priority in [Priority.URGENT, Priority.HIGH, Priority.NORMAL, Priority.LOW]:
+            priority_key = self.priority_keys[priority]
+            
+            # Get oldest message from this priority level
+            result = self.redis_client.zpopmin(priority_key)
+            
+            if result:
+                message_id = result[0][0]
+                
+                # Move to processing set
+                self.redis_client.sadd(self.processing_key, message_id)
+                
+                # Get message data
+                message_data = self.redis_client.hget(self.message_data_key, message_id)
+                if message_data:
+                    return QueueMessage(**json.loads(message_data))
+        
+        # If no message found and timeout specified, block
+        if timeout > 0:
+            # Use BLPOP on a notification list (producers push to notify)
+            notify_key = f"{self.queue_name}:notify"
+            result = self.redis_client.blpop(notify_key, timeout=timeout)
+            if result:
+                # Recursively try to dequeue
+                return self.dequeue(timeout=0)
+        
+        return None
+    
+    def acknowledge(self, message_id: str) -> bool:
+        """Acknowledge message processing completion"""
+        # Remove from processing set
+        removed = self.redis_client.srem(self.processing_key, message_id)
+        
+        if removed:
+            # Remove message data
+            self.redis_client.hdel(self.message_data_key, message_id)
+            return True
+        
+        return False
+    
+    def nack(self, message_id: str, requeue: bool = True) -> bool:
+        """Negative acknowledge - requeue or move to failed"""
+        # Get message data
+        message_data = self.redis_client.hget(self.message_data_key, message_id)
+        if not message_data:
+            return False
+        
+        message = QueueMessage(**json.loads(message_data))
+        message.attempts += 1
+        
+        # Remove from processing
+        self.redis_client.srem(self.processing_key, message_id)
+        
+        if requeue and message.attempts < message.max_attempts:
+            # Update message data
+            self.redis_client.hset(
+                self.message_data_key,
+                message_id,
+                json.dumps(asdict(message))
+            )
+            
+            # Add back to priority queue with slight delay (exponential backoff)
+            delay = min(300, 5 * (2 ** message.attempts))  # Max 5 minutes
+            score = time.time() + delay
+            
+            priority_key = self.priority_keys[message.priority]
+            self.redis_client.zadd(priority_key, {message_id: score})
+            
+            return True
+        else:
+            # Move to failed queue
+            self.redis_client.sadd(self.failed_key, message_id)
+            # Keep message data for debugging
+            return False
+    
+    def get_queue_sizes(self) -> Dict[str, int]:
+        """Get size of each priority queue"""
+        sizes = {}
+        for priority, key in self.priority_keys.items():
+            sizes[priority.name] = self.redis_client.zcard(key)
+        
+        sizes['PROCESSING'] = self.redis_client.scard(self.processing_key)
+        sizes['FAILED'] = self.redis_client.scard(self.failed_key)
+        
+        return sizes
+    
+    def get_failed_messages(self) -> List[QueueMessage]:
+        """Get all failed messages"""
+        failed_ids = self.redis_client.smembers(self.failed_key)
+        messages = []
+        
+        for message_id in failed_ids:
+            message_data = self.redis_client.hget(self.message_data_key, message_id)
+            if message_data:
+                messages.append(QueueMessage(**json.loads(message_data)))
+        
+        return messages
+
+# Usage example
+async def worker(queue: PriorityMessageQueue, worker_id: str):
+    """Worker process to handle messages"""
+    print(f"Worker {worker_id} started")
+    
+    while True:
+        try:
+            # Get next message
+            message = queue.dequeue(timeout=5)
+            
+            if message:
+                print(f"Worker {worker_id} processing: {message.id} (Priority: {message.priority.name})")
+                
+                try:
+                    # Process message
+                    success = await process_message(message.data)
+                    
+                    if success:
+                        queue.acknowledge(message.id)
+                        print(f"Worker {worker_id} completed: {message.id}")
+                    else:
+                        queue.nack(message.id, requeue=True)
+                        print(f"Worker {worker_id} failed: {message.id} (requeued)")
+                        
+                except Exception as e:
+                    print(f"Worker {worker_id} error processing {message.id}: {e}")
+                    queue.nack(message.id, requeue=True)
+            else:
+                # No messages, brief pause
+                await asyncio.sleep(1)
+                
+        except KeyboardInterrupt:
+            print(f"Worker {worker_id} shutting down")
+            break
+        except Exception as e:
+            print(f"Worker {worker_id} error: {e}")
+            await asyncio.sleep(1)
+
+async def process_message(data: Dict[str, Any]) -> bool:
+    """Simulate message processing"""
+    message_type = data.get('type')
+    
+    # Simulate different processing times
+    if message_type == 'email':
+        await asyncio.sleep(0.1)  # Email sending
+    elif message_type == 'image_processing':
+        await asyncio.sleep(1.0)  # Image processing
+    elif message_type == 'notification':
+        await asyncio.sleep(0.05)  # Push notification
+    
+    # Simulate occasional failures
+    import random
+    return random.random() > 0.1  # 90% success rate
+
+# Producer example
+def produce_messages():
+    """Produce test messages"""
+    queue = PriorityMessageQueue('tasks')
+    
+    # High priority task
+    queue.enqueue(
+        {'type': 'notification', 'user_id': 1000, 'message': 'Urgent alert'},
+        Priority.URGENT
+    )
+    
+    # Normal priority tasks
+    for i in range(5):
+        queue.enqueue(
+            {'type': 'email', 'to': f'user{i}@example.com', 'subject': 'Weekly update'},
+            Priority.NORMAL
+        )
+    
+    # Low priority task
+    queue.enqueue(
+        {'type': 'image_processing', 'image_id': 12345, 'operations': ['resize', 'watermark']},
+        Priority.LOW
+    )
+
+# Example usage
+async def main():
+    # Create queue and produce messages
+    produce_messages()
+    
+    # Start workers
+    queue = PriorityMessageQueue('tasks')
+    
+    workers = [
+        asyncio.create_task(worker(queue, f"worker-{i}"))
+        for i in range(3)
+    ]
+    
+    # Monitor queue sizes
+    async def monitor():
+        while True:
+            sizes = queue.get_queue_sizes()
+            print(f"Queue sizes: {sizes}")
+            await asyncio.sleep(10)
+    
+    monitor_task = asyncio.create_task(monitor())
+    
+    try:
+        await asyncio.gather(*workers, monitor_task)
+    except KeyboardInterrupt:
+        print("Shutting down...")
+
+if __name__ == "__main__":
+    asyncio.run(main())</code></pre>
+        </section>
+
+        <section>
+            <h2>Performance and Best Practices</h2>
+            
+            <h3>Pub/Sub Performance Considerations</h3>
+            
+            <h4>Connection Management</h4>
+            <pre><code># Good: Dedicated connections for Pub/Sub
+pubsub_redis = redis.Redis(host='localhost', port=6379, db=0)
+regular_redis = redis.Redis(host='localhost', port=6379, db=0)
+
+# Don't mix Pub/Sub and regular commands on same connection
+pubsub = pubsub_redis.pubsub()
+pubsub.subscribe('channel1')
+
+# Use regular connection for other operations
+regular_redis.set('key', 'value')</code></pre>
+
+            <h4>Message Size Optimization</h4>
+            <pre><code># Good: Small, structured messages
+message = {
+    'type': 'user_action',
+    'user_id': 1000,
+    'action': 'login',
+    'timestamp': 1703123456
+}
+
+# Bad: Large messages that could overwhelm subscribers
+# Don't include full user objects, file contents, etc.
+
+# Use references instead
+message = {
+    'type': 'document_uploaded',
+    'doc_id': 'doc123',  # Reference, not full document
+    'user_id': 1000,
+    'size': 1024000
+}</code></pre>
+
+            <h3>Streams Performance Optimization</h3>
+            
+            <h4>Consumer Group Best Practices</h4>
+            <pre><code># Configure consumer groups for optimal performance
+
+# 1. Appropriate batch sizes
+XREADGROUP GROUP analytics worker1 COUNT 100 STREAMS events >
+# Balance between throughput and latency
+
+# 2. Multiple consumers per group
+# worker1, worker2, worker3 in same group = horizontal scaling
+
+# 3. Different groups for different purposes
+XGROUP CREATE events analytics $      # Real-time analytics
+XGROUP CREATE events audit 0          # Full audit trail
+XGROUP CREATE events backup $         # Backup processing
+
+# 4. Proper acknowledgment
+XACK events analytics message_id1 message_id2 message_id3</code></pre>
+
+            <h4>Stream Maintenance</h4>
+            <pre><code>#!/bin/bash
+# Stream maintenance script
+
+REDIS_CLI="redis-cli -h localhost -p 6379"
+STREAM_NAME="events"
+MAX_LEN=1000000  # Keep last 1M messages
+
+# Trim stream to prevent unlimited growth
+$REDIS_CLI XTRIM $STREAM_NAME MAXLEN ~ $MAX_LEN
+
+# Clean up old consumer groups if needed
+# (Manual process - check which groups are still active)
+
+# Monitor stream info
+$REDIS_CLI XINFO STREAM $STREAM_NAME
+$REDIS_CLI XINFO GROUPS $STREAM_NAME</code></pre>
+
+            <h3>Monitoring and Alerting</h3>
+            
+            <h4>Pub/Sub Monitoring</h4>
+            <pre><code>#!/bin/bash
+# Pub/Sub monitoring script
+
+monitor_pubsub() {
+    echo "=== Pub/Sub Monitoring ==="
+    
+    # Active channels
+    echo "Active channels:"
+    redis-cli PUBSUB CHANNELS | head -20
+    
+    # Subscriber counts
+    echo -e "\nSubscriber counts:"
+    redis-cli PUBSUB NUMSUB $(redis-cli PUBSUB CHANNELS | head -10 | tr '\n' ' ')
+    
+    # Pattern subscriptions
+    echo -e "\nPattern subscriptions:"
+    redis-cli PUBSUB NUMPAT
+    
+    # Connection info
+    echo -e "\nConnection info:"
+    redis-cli INFO clients | grep connected_clients
+    
+    # Memory usage
+    echo -e "\nMemory usage:"
+    redis-cli INFO memory | grep used_memory_human
+}
+
+monitor_streams() {
+    echo -e "\n=== Streams Monitoring ==="
+    
+    # List all streams
+    echo "Streams:"
+    redis-cli --scan --pattern "*" --type stream
+    
+    # Stream info for each
+    for stream in $(redis-cli --scan --pattern "*" --type stream); do
+        echo -e "\nStream: $stream"
+        redis-cli XINFO STREAM $stream | head -20
+        
+        # Consumer groups
+        echo "Consumer groups:"
+        redis-cli XINFO GROUPS $stream 2>/dev/null || echo "No consumer groups"
+    done
+}
+
+# Run monitoring
+monitor_pubsub
+monitor_streams</code></pre>
+
+            <h4>Performance Metrics</h4>
+            <table border="1">
+                <tr>
+                    <th>Metric</th>
+                    <th>Good Value</th>
+                    <th>Warning Threshold</th>
+                    <th>Action</th>
+                </tr>
+                <tr>
+                    <td>Message publish rate</td>
+                    <td>< 10K/sec per channel</td>
+                    <td>> 50K/sec</td>
+                    <td>Consider partitioning</td>
+                </tr>
+                <tr>
+                    <td>Subscriber count</td>
+                    <td>< 1000 per channel</td>
+                    <td>> 5000</td>
+                    <td>Use pattern subscriptions</td>
+                </tr>
+                <tr>
+                    <td>Stream length</td>
+                    <td>< 1M messages</td>
+                    <td>> 10M messages</td>
+                    <td>Implement trimming</td>
+                </tr>
+                <tr>
+                    <td>Pending messages</td>
+                    <td>< 1000</td>
+                    <td>> 10000</td>
+                    <td>Add more consumers</td>
+                </tr>
+                <tr>
+                    <td>Memory usage</td>
+                    <td>< 70%</td>
+                    <td>> 85%</td>
+                    <td>Optimize or scale</td>
+                </tr>
+            </table>
+        </section>
+
+        <section>
+            <h2>Next Steps</h2>
+            <p>With Redis messaging mastery achieved, you can now build sophisticated real-time applications with confidence. In the next posts of this series, we'll explore:</p>
+            <ul>
+                <li><strong>Redis Transactions and Pipelining:</strong> Ensuring data consistency and optimizing performance with atomic operations</li>
+                <li><strong>Server-side Programming with Lua Scripts:</strong> Advanced operations and custom functionality</li>
+                <li><strong>Extending Redis with Modules:</strong> RedisJSON, RedisSearch, and other powerful extensions</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Key Takeaways</h2>
+            <ul>
+                <li>Redis Pub/Sub provides lightweight, real-time messaging with fire-and-forget semantics</li>
+                <li>Redis Streams offer persistent messaging with consumer groups and acknowledgments</li>
+                <li>Use Pub/Sub for real-time notifications and live updates where message loss is acceptable</li>
+                <li>Use Streams for event sourcing, task queues, and scenarios requiring message persistence</li>
+                <li>Consumer groups enable horizontal scaling and load distribution in stream processing</li>
+                <li>Proper connection management is crucial for Pub/Sub performance</li>
+                <li>Monitor message rates, subscriber counts, and memory usage for optimal performance</li>
+                <li>Implement proper error handling and retry logic for robust messaging systems</li>
+                <li>Consider message size and frequency to avoid overwhelming subscribers</li>
+                <li>Regular maintenance like stream trimming prevents unbounded growth</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Practice Exercises</h2>
+            <ol>
+                <li>Build a real-time chat application using Redis Pub/Sub</li>
+                <li>Implement a notification system with user, group, and broadcast channels</li>
+                <li>Create an event processing system using Redis Streams and consumer groups</li>
+                <li>Build a priority message queue with retry logic and dead letter handling</li>
+                <li>Implement real-time analytics dashboard with live data updates</li>
+                <li>Create a distributed logging system using Streams</li>
+                <li>Build a real-time multiplayer game state synchronization system</li>
+                <li>Implement an order processing pipeline with event sourcing</li>
+            </ol>
+        </section>
+
+        <section>
+            <h2>Further Reading</h2>
+            <ul>
+                <li><a href="https://redis.io/topics/pubsub">Official Redis Pub/Sub Documentation</a></li>
+                <li><a href="https://redis.io/topics/streams-intro">Redis Streams Introduction</a></li>
+                <li><a href="https://redis.io/commands#pubsub">Pub/Sub Commands Reference</a></li>
+                <li><a href="https://redis.io/commands#stream">Stream Commands Reference</a></li>
+                <li><a href="https://redis.io/topics/clients">Redis Client Libraries</a></li>
+                <li><a href="https://redis.io/topics/memory-optimization">Redis Memory Optimization</a></li>
+            </ul>
+        </section>
+    </main>
+
+    <footer>
+        <hr>
+        <p><em>This is the seventh post in our comprehensive Redis series. You now have the knowledge to build sophisticated real-time messaging systems and event-driven applications.</em></p>
+        <p><strong>Previous:</strong> <a href="06-scaling-with-redis-clustering.html">Scaling with Redis Clustering</a></p>
+        <p><strong>Next up:</strong> Redis Transactions and Pipelining</p>
+    </footer>
+</body>
+</html>

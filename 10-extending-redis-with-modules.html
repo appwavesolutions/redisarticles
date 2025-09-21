@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Extending Redis with Modules: RedisJSON, RedisSearch, and Beyond</title>
+</head>
+<body>
+    <header>
+        <h1>Extending Redis with Modules: RedisJSON, RedisSearch, and Beyond</h1>
+        <p><em>Explore powerful Redis modules that extend functionality beyond core data structures</em></p>
+        <p><strong>Published:</strong> Blog Post #10 of Redis Mastery Series</p>
+    </header>
+
+    <main>
+        <section>
+            <h2>Introduction</h2>
+            <p>Redis modules extend the core functionality with specialized data types and operations. Popular modules include RedisJSON for JSON document storage, RedisSearch for full-text search, RedisTimeSeries for time-series data, and many others that transform Redis into a multi-model database.</p>
+        </section>
+
+        <section>
+            <h2>RedisJSON: Native JSON Support</h2>
+            
+            <h3>Basic JSON Operations</h3>
+            <pre><code># Set JSON document
+JSON.SET user:1000 $ '{"name":"John","age":30,"city":"NYC","hobbies":["reading","coding"]}'
+
+# Get entire document
+JSON.GET user:1000
+
+# Get specific field
+JSON.GET user:1000 $.name
+
+# Set nested field
+JSON.SET user:1000 $.address '{"street":"123 Main St","zip":"10001"}'
+
+# Append to array
+JSON.ARRAPPEND user:1000 $.hobbies '"gaming"'
+
+# Increment numeric field
+JSON.NUMINCRBY user:1000 $.age 1</code></pre>
+
+            <h3>Complex JSON Queries</h3>
+            <pre><code># Multiple path queries
+JSON.GET user:1000 $.name $.age $.city
+
+# Array operations
+JSON.ARRLEN user:1000 $.hobbies
+JSON.ARRINDEX user:1000 $.hobbies '"coding"'
+
+# Object operations
+JSON.OBJKEYS user:1000 $.address
+JSON.OBJLEN user:1000 $
+
+# Delete operations
+JSON.DEL user:1000 $.hobbies[0]
+JSON.DEL user:1000 $.address.zip</code></pre>
+
+            <h3>Python with RedisJSON</h3>
+            <pre><code>import redis
+import json
+
+class JSONStorage:
+    def __init__(self):
+        self.redis = redis.Redis(decode_responses=True)
+    
+    def set_user(self, user_id: str, user_data: dict):
+        """Store user as JSON document"""
+        self.redis.execute_command('JSON.SET', f'user:{user_id}', '$', json.dumps(user_data))
+    
+    def get_user(self, user_id: str) -> dict:
+        """Get user JSON document"""
+        result = self.redis.execute_command('JSON.GET', f'user:{user_id}')
+        return json.loads(result) if result else None
+    
+    def update_user_field(self, user_id: str, path: str, value):
+        """Update specific field in user document"""
+        self.redis.execute_command('JSON.SET', f'user:{user_id}', f'$.{path}', json.dumps(value))
+    
+    def add_to_array(self, user_id: str, array_path: str, value):
+        """Add item to array field"""
+        self.redis.execute_command('JSON.ARRAPPEND', f'user:{user_id}', f'$.{array_path}', json.dumps(value))
+
+# Usage
+storage = JSONStorage()
+
+user_data = {
+    "name": "John Doe",
+    "email": "john@example.com",
+    "profile": {
+        "age": 30,
+        "city": "New York",
+        "interests": ["programming", "music"]
+    },
+    "orders": []
+}
+
+storage.set_user("1000", user_data)
+storage.add_to_array("1000", "profile.interests", "gaming")
+storage.update_user_field("1000", "profile.age", 31)</code></pre>
+        </section>
+
+        <section>
+            <h2>RedisSearch: Full-Text Search</h2>
+            
+            <h3>Creating Search Indexes</h3>
+            <pre><code># Create index for products
+FT.CREATE products:idx 
+  ON HASH 
+  PREFIX 1 product:
+  SCHEMA 
+    name TEXT WEIGHT 5.0 
+    description TEXT 
+    category TAG 
+    price NUMERIC SORTABLE
+    rating NUMERIC SORTABLE
+
+# Index JSON documents
+FT.CREATE users:idx 
+  ON JSON 
+  PREFIX 1 user:
+  SCHEMA 
+    $.name AS name TEXT
+    $.email AS email TAG
+    $.profile.city AS city TAG
+    $.profile.age AS age NUMERIC SORTABLE</code></pre>
+
+            <h3>Search Queries</h3>
+            <pre><code># Text search
+FT.SEARCH products:idx "laptop gaming"
+
+# Tag filters
+FT.SEARCH products:idx "@category:{electronics}"
+
+# Numeric filters
+FT.SEARCH products:idx "@price:[100 500]"
+
+# Complex queries
+FT.SEARCH products:idx "gaming @category:{electronics} @price:[200 1000]" 
+  SORTBY rating DESC 
+  LIMIT 0 10
+
+# Aggregation
+FT.AGGREGATE products:idx "*" 
+  GROUPBY 1 @category 
+  REDUCE COUNT 0 AS count 
+  SORTBY 2 @count DESC</code></pre>
+
+            <h3>Search with Python</h3>
+            <pre><code>class ProductSearch:
+    def __init__(self):
+        self.redis = redis.Redis(decode_responses=True)
+        self.setup_index()
+    
+    def setup_index(self):
+        """Create search index for products"""
+        try:
+            self.redis.execute_command(
+                'FT.CREATE', 'products:idx',
+                'ON', 'HASH',
+                'PREFIX', '1', 'product:',
+                'SCHEMA', 
+                'name', 'TEXT', 'WEIGHT', '5.0',
+                'description', 'TEXT',
+                'category', 'TAG',
+                'price', 'NUMERIC', 'SORTABLE',
+                'rating', 'NUMERIC', 'SORTABLE'
+            )
+        except:
+            pass  # Index might already exist
+    
+    def add_product(self, product_id: str, product_data: dict):
+        """Add product to search index"""
+        key = f'product:{product_id}'
+        self.redis.hset(key, mapping=product_data)
+    
+    def search_products(self, query: str, filters: dict = None, limit: int = 10):
+        """Search products with optional filters"""
+        search_query = query
+        
+        if filters:
+            if 'category' in filters:
+                search_query += f" @category:{{{filters['category']}}}"
+            if 'min_price' in filters or 'max_price' in filters:
+                min_p = filters.get('min_price', 0)
+                max_p = filters.get('max_price', 'inf')
+                search_query += f" @price:[{min_p} {max_p}]"
+        
+        result = self.redis.execute_command(
+            'FT.SEARCH', 'products:idx', search_query,
+            'LIMIT', '0', str(limit),
+            'SORTBY', 'rating', 'DESC'
+        )
+        
+        return self.parse_search_results(result)
+    
+    def parse_search_results(self, result):
+        """Parse FT.SEARCH results"""
+        if not result or len(result) < 2:
+            return {'total': 0, 'products': []}
+        
+        total = result[0]
+        products = []
+        
+        for i in range(1, len(result), 2):
+            if i + 1 < len(result):
+                doc_id = result[i]
+                fields = result[i + 1]
+                
+                product = {}
+                for j in range(0, len(fields), 2):
+                    if j + 1 < len(fields):
+                        product[fields[j]] = fields[j + 1]
+                
+                products.append({'id': doc_id, **product})
+        
+        return {'total': total, 'products': products}
+
+# Usage
+search = ProductSearch()
+
+# Add products
+products = [
+    {'name': 'Gaming Laptop', 'description': 'High-performance laptop for gaming', 
+     'category': 'electronics', 'price': '1200', 'rating': '4.5'},
+    {'name': 'Wireless Mouse', 'description': 'Ergonomic wireless mouse', 
+     'category': 'electronics', 'price': '50', 'rating': '4.2'}
+]
+
+for i, product in enumerate(products):
+    search.add_product(str(i), product)
+
+# Search
+results = search.search_products(
+    "gaming", 
+    filters={'category': 'electronics', 'min_price': 100}
+)
+print(f"Found {results['total']} products")</code></pre>
+        </section>
+
+        <section>
+            <h2>RedisTimeSeries: Time-Series Data</h2>
+            
+            <h3>Basic Time-Series Operations</h3>
+            <pre><code># Create time series
+TS.CREATE temperature:sensor1 LABELS sensor_id 1 location "room1"
+
+# Add samples
+TS.ADD temperature:sensor1 * 23.5
+TS.ADD temperature:sensor1 1609459200000 24.1
+
+# Add multiple samples
+TS.MADD temperature:sensor1 1609459260000 24.3 temperature:sensor1 1609459320000 23.8
+
+# Query range
+TS.RANGE temperature:sensor1 1609459200000 1609459400000
+
+# Query with aggregation
+TS.RANGE temperature:sensor1 1609459200000 1609459400000 AGGREGATION avg 60000
+
+# Get latest sample
+TS.GET temperature:sensor1</code></pre>
+
+            <h3>Time-Series with Python</h3>
+            <pre><code>import time
+from datetime import datetime, timedelta
+
+class TimeSeriesManager:
+    def __init__(self):
+        self.redis = redis.Redis(decode_responses=True)
+    
+    def create_sensor(self, sensor_id: str, labels: dict):
+        """Create time series for sensor"""
+        cmd = ['TS.CREATE', f'sensor:{sensor_id}', 'LABELS']
+        for key, value in labels.items():
+            cmd.extend([key, value])
+        
+        try:
+            self.redis.execute_command(*cmd)
+        except:
+            pass  # Series might already exist
+    
+    def add_sample(self, sensor_id: str, value: float, timestamp: int = None):
+        """Add sample to time series"""
+        ts = timestamp or int(time.time() * 1000)
+        self.redis.execute_command('TS.ADD', f'sensor:{sensor_id}', ts, value)
+    
+    def get_range(self, sensor_id: str, start_time: int, end_time: int, 
+                  aggregation: str = None, bucket_size: int = None):
+        """Get time series data for range"""
+        cmd = ['TS.RANGE', f'sensor:{sensor_id}', start_time, end_time]
+        
+        if aggregation and bucket_size:
+            cmd.extend(['AGGREGATION', aggregation, bucket_size])
+        
+        result = self.redis.execute_command(*cmd)
+        return [(int(ts), float(value)) for ts, value in result]
+    
+    def get_latest(self, sensor_id: str):
+        """Get latest sample"""
+        result = self.redis.execute_command('TS.GET', f'sensor:{sensor_id}')
+        if result:
+            return int(result[0]), float(result[1])
+        return None
+
+# Usage
+ts_manager = TimeSeriesManager()
+
+# Create sensors
+ts_manager.create_sensor('temp001', {'type': 'temperature', 'location': 'room1'})
+ts_manager.create_sensor('humidity001', {'type': 'humidity', 'location': 'room1'})
+
+# Add samples
+now = int(time.time() * 1000)
+for i in range(60):
+    timestamp = now + (i * 60 * 1000)  # Every minute
+    temp = 20 + (i % 10)  # Temperature variation
+    humidity = 50 + (i % 20)  # Humidity variation
+    
+    ts_manager.add_sample('temp001', temp, timestamp)
+    ts_manager.add_sample('humidity001', humidity, timestamp)
+
+# Query last hour with 5-minute averages
+end_time = now + (60 * 60 * 1000)
+temp_data = ts_manager.get_range('temp001', now, end_time, 'avg', 300000)
+print(f"Temperature averages: {temp_data}")</code></pre>
+        </section>
+
+        <section>
+            <h2>Other Popular Modules</h2>
+            
+            <h3>RedisGraph: Graph Database</h3>
+            <pre><code># Create graph
+GRAPH.QUERY social "CREATE (:Person {name:'John', age:30})"
+GRAPH.QUERY social "CREATE (:Person {name:'Jane', age:25})"
+
+# Create relationship
+GRAPH.QUERY social "MATCH (j:Person {name:'John'}), (jane:Person {name:'Jane'}) CREATE (j)-[:FRIEND]->(jane)"
+
+# Query graph
+GRAPH.QUERY social "MATCH (p:Person)-[:FRIEND]->(f:Person) RETURN p.name, f.name"</code></pre>
+
+            <h3>RedisBloom: Probabilistic Data Structures</h3>
+            <pre><code># Bloom filter
+BF.RESERVE users:visited 0.01 1000000
+BF.ADD users:visited "user:1000"
+BF.EXISTS users:visited "user:1000"  # Returns 1
+
+# Count-Min Sketch
+CMS.INITBYDIM page_views 1000 10
+CMS.INCRBY page_views "/home" 1 "/about" 3
+CMS.QUERY page_views "/home"  # Returns approximate count</code></pre>
+
+            <h3>RedisGears: Event Processing</h3>
+            <pre><code># Process events on key changes
+RG.PYEXECUTE "
+def process_user_update(record):
+    # Process user data changes
+    key = record['key']
+    value = record['value']
+    # Send notification, update analytics, etc.
+    return record
+
+GB('KeysReader').map(process_user_update).register(prefix='user:*')
+"</code></pre>
+        </section>
+
+        <section>
+            <h2>Module Management</h2>
+            
+            <h3>Loading Modules</h3>
+            <pre><code># Load module at startup (redis.conf)
+loadmodule /usr/lib/redis/modules/rejson.so
+
+# Load module at runtime
+MODULE LOAD /usr/lib/redis/modules/redisearch.so
+
+# List loaded modules
+MODULE LIST
+
+# Unload module
+MODULE UNLOAD search</code></pre>
+
+            <h3>Installation Example</h3>
+            <pre><code># Install Redis Stack (includes major modules)
+docker run -d --name redis-stack -p 6379:6379 redis/redis-stack:latest
+
+# Or install modules separately
+wget https://download.redis.io/redis-stack/redis-stack-server-6.2.6-v7.deb
+dpkg -i redis-stack-server-6.2.6-v7.deb</code></pre>
+        </section>
+
+        <section>
+            <h2>Key Takeaways</h2>
+            <ul>
+                <li>Redis modules extend functionality beyond core data types</li>
+                <li>RedisJSON enables native JSON document storage and querying</li>
+                <li>RedisSearch provides full-text search capabilities</li>
+                <li>RedisTimeSeries optimizes time-series data operations</li>
+                <li>Modules can be loaded dynamically or at startup</li>
+                <li>Redis Stack includes the most popular modules</li>
+                <li>Choose modules based on specific use case requirements</li>
+            </ul>
+        </section>
+    </main>
+
+    <footer>
+        <hr>
+        <p><strong>Previous:</strong> <a href="09-server-side-programming-lua-scripts.html">Server-side Programming with Lua Scripts</a></p>
+        <p><strong>Next up:</strong> Redis Monitoring and Performance Optimization</p>
+    </footer>
+</body>
+</html>

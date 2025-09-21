@@ -1,0 +1,1079 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-world Redis Use Cases: Practical Applications and Success Stories</title>
+</head>
+<body>
+    <header>
+        <h1>Real-world Redis Use Cases: Practical Applications and Success Stories</h1>
+        <p><em>Explore practical Redis implementations across industries and use cases</em></p>
+        <p><strong>Published:</strong> Blog Post #13 of Redis Mastery Series</p>
+    </header>
+
+    <main>
+        <section>
+            <h2>Introduction</h2>
+            <p>Redis's versatility makes it suitable for numerous real-world applications across different industries. This article explores practical use cases, implementation patterns, and success stories that demonstrate Redis's power in solving complex problems efficiently.</p>
+        </section>
+
+        <section>
+            <h2>Caching and Performance Acceleration</h2>
+            
+            <h3>Database Query Caching</h3>
+            <pre><code>import redis
+import hashlib
+import json
+import time
+
+class DatabaseCacheManager:
+    def __init__(self, redis_client, default_ttl=3600):
+        self.redis = redis_client
+        self.default_ttl = default_ttl
+    
+    def cache_query_result(self, query: str, params: dict, result: any, ttl: int = None):
+        """Cache database query result"""
+        cache_key = self.generate_cache_key(query, params)
+        cache_value = {
+            'result': result,
+            'cached_at': time.time(),
+            'query': query
+        }
+        
+        ttl = ttl or self.default_ttl
+        self.redis.set(cache_key, json.dumps(cache_value), ex=ttl)
+        
+        # Track cache statistics
+        self.redis.incr('cache:stats:writes')
+        self.redis.sadd('cache:active_keys', cache_key)
+    
+    def get_cached_result(self, query: str, params: dict):
+        """Retrieve cached query result"""
+        cache_key = self.generate_cache_key(query, params)
+        cached_data = self.redis.get(cache_key)
+        
+        if cached_data:
+            self.redis.incr('cache:stats:hits')
+            return json.loads(cached_data)['result']
+        else:
+            self.redis.incr('cache:stats:misses')
+            return None
+    
+    def generate_cache_key(self, query: str, params: dict) -> str:
+        """Generate consistent cache key"""
+        key_data = f"{query}:{json.dumps(params, sort_keys=True)}"
+        return f"cache:query:{hashlib.md5(key_data.encode()).hexdigest()}"
+    
+    def invalidate_pattern(self, pattern: str):
+        """Invalidate cache keys matching pattern"""
+        keys = self.redis.keys(f"cache:*{pattern}*")
+        if keys:
+            self.redis.delete(*keys)
+            self.redis.srem('cache:active_keys', *keys)
+    
+    def get_cache_stats(self):
+        """Get cache performance statistics"""
+        hits = int(self.redis.get('cache:stats:hits') or 0)
+        misses = int(self.redis.get('cache:stats:misses') or 0)
+        writes = int(self.redis.get('cache:stats:writes') or 0)
+        
+        total_requests = hits + misses
+        hit_ratio = (hits / total_requests * 100) if total_requests > 0 else 0
+        
+        return {
+            'hits': hits,
+            'misses': misses,
+            'writes': writes,
+            'hit_ratio': hit_ratio,
+            'active_keys': self.redis.scard('cache:active_keys')
+        }
+
+# Usage in web application
+def get_user_profile(user_id: int):
+    cache_manager = DatabaseCacheManager(redis_client)
+    
+    # Try cache first
+    cached_profile = cache_manager.get_cached_result(
+        "SELECT * FROM users WHERE id = %s", 
+        {"user_id": user_id}
+    )
+    
+    if cached_profile:
+        return cached_profile
+    
+    # Cache miss - query database
+    profile = database.execute_query(
+        "SELECT * FROM users WHERE id = %s", 
+        [user_id]
+    )
+    
+    # Cache for 1 hour
+    cache_manager.cache_query_result(
+        "SELECT * FROM users WHERE id = %s",
+        {"user_id": user_id},
+        profile,
+        ttl=3600
+    )
+    
+    return profile</code></pre>
+
+            <h3>Content Delivery and API Response Caching</h3>
+            <pre><code>class CDNCacheManager:
+    def __init__(self, redis_client):
+        self.redis = redis_client
+    
+    def cache_api_response(self, endpoint: str, params: dict, response_data: dict, 
+                          cache_duration: int = 300):
+        """Cache API response with geographic awareness"""
+        cache_key = f"api:{endpoint}:{hashlib.md5(str(params).encode()).hexdigest()}"
+        
+        cached_response = {
+            'data': response_data,
+            'cached_at': time.time(),
+            'endpoint': endpoint,
+            'version': 'v1'
+        }
+        
+        # Cache in multiple regions
+        regions = ['us-east', 'eu-west', 'asia-pacific']
+        for region in regions:
+            regional_key = f"{region}:{cache_key}"
+            self.redis.set(regional_key, json.dumps(cached_response), ex=cache_duration)
+    
+    def cache_static_content(self, content_path: str, content: bytes, 
+                           content_type: str = 'text/html'):
+        """Cache static content with compression"""
+        import gzip
+        
+        # Compress content
+        compressed_content = gzip.compress(content)
+        
+        cache_data = {
+            'content': compressed_content.hex(),  # Store as hex string
+            'content_type': content_type,
+            'compressed': True,
+            'original_size': len(content),
+            'compressed_size': len(compressed_content)
+        }
+        
+        # Cache for 24 hours
+        self.redis.set(f"static:{content_path}", json.dumps(cache_data), ex=86400)
+    
+    def get_static_content(self, content_path: str):
+        """Retrieve and decompress static content"""
+        cached_data = self.redis.get(f"static:{content_path}")
+        
+        if cached_data:
+            data = json.loads(cached_data)
+            if data['compressed']:
+                import gzip
+                compressed_content = bytes.fromhex(data['content'])
+                content = gzip.decompress(compressed_content)
+                return content, data['content_type']
+        
+        return None, None</code></pre>
+        </section>
+
+        <section>
+            <h2>Session Management</h2>
+            
+            <h3>Distributed Session Store</h3>
+            <pre><code>class DistributedSessionManager:
+    def __init__(self, redis_client, session_timeout=3600):
+        self.redis = redis_client
+        self.session_timeout = session_timeout
+    
+    def create_session(self, user_id: int, user_data: dict, device_info: dict = None):
+        """Create new user session"""
+        import uuid
+        
+        session_id = str(uuid.uuid4())
+        session_data = {
+            'user_id': user_id,
+            'created_at': time.time(),
+            'last_activity': time.time(),
+            'user_data': user_data,
+            'device_info': device_info or {},
+            'ip_address': '192.168.1.1',  # Get from request
+            'user_agent': 'Browser/1.0'   # Get from request
+        }
+        
+        # Store session
+        session_key = f"session:{session_id}"
+        self.redis.hset(session_key, mapping={
+            k: json.dumps(v) if isinstance(v, (dict, list)) else str(v)
+            for k, v in session_data.items()
+        })
+        self.redis.expire(session_key, self.session_timeout)
+        
+        # Track active sessions for user
+        user_sessions_key = f"user_sessions:{user_id}"
+        self.redis.sadd(user_sessions_key, session_id)
+        self.redis.expire(user_sessions_key, self.session_timeout)
+        
+        # Track session for cleanup
+        self.redis.zadd('session_cleanup', {session_id: time.time() + self.session_timeout})
+        
+        return session_id
+    
+    def get_session(self, session_id: str):
+        """Retrieve session data"""
+        session_key = f"session:{session_id}"
+        session_data = self.redis.hgetall(session_key)
+        
+        if session_data:
+            # Update last activity
+            self.redis.hset(session_key, 'last_activity', time.time())
+            self.redis.expire(session_key, self.session_timeout)
+            
+            # Parse JSON fields
+            parsed_data = {}
+            for key, value in session_data.items():
+                try:
+                    parsed_data[key] = json.loads(value)
+                except:
+                    parsed_data[key] = value
+            
+            return parsed_data
+        
+        return None
+    
+    def update_session(self, session_id: str, updates: dict):
+        """Update session data"""
+        session_key = f"session:{session_id}"
+        
+        # Serialize complex data
+        serialized_updates = {
+            k: json.dumps(v) if isinstance(v, (dict, list)) else str(v)
+            for k, v in updates.items()
+        }
+        
+        # Update fields
+        self.redis.hset(session_key, mapping=serialized_updates)
+        self.redis.hset(session_key, 'last_activity', time.time())
+        self.redis.expire(session_key, self.session_timeout)
+    
+    def destroy_session(self, session_id: str):
+        """Destroy session"""
+        session_key = f"session:{session_id}"
+        session_data = self.redis.hgetall(session_key)
+        
+        if session_data:
+            user_id = session_data.get('user_id')
+            
+            # Remove session
+            self.redis.delete(session_key)
+            
+            # Remove from user sessions
+            if user_id:
+                self.redis.srem(f"user_sessions:{user_id}", session_id)
+            
+            # Remove from cleanup tracking
+            self.redis.zrem('session_cleanup', session_id)
+            
+            return True
+        
+        return False
+    
+    def cleanup_expired_sessions(self):
+        """Clean up expired sessions"""
+        current_time = time.time()
+        
+        # Get expired sessions
+        expired_sessions = self.redis.zrangebyscore(
+            'session_cleanup', 0, current_time
+        )
+        
+        for session_id in expired_sessions:
+            self.destroy_session(session_id)
+        
+        return len(expired_sessions)
+    
+    def get_user_sessions(self, user_id: int):
+        """Get all active sessions for user"""
+        user_sessions_key = f"user_sessions:{user_id}"
+        session_ids = self.redis.smembers(user_sessions_key)
+        
+        sessions = []
+        for session_id in session_ids:
+            session_data = self.get_session(session_id)
+            if session_data:
+                sessions.append({
+                    'session_id': session_id,
+                    **session_data
+                })
+        
+        return sessions</code></pre>
+
+            <h3>Shopping Cart Implementation</h3>
+            <pre><code>class ShoppingCartManager:
+    def __init__(self, redis_client):
+        self.redis = redis_client
+        self.cart_ttl = 86400 * 7  # 7 days
+    
+    def add_item(self, user_id: str, product_id: str, quantity: int, price: float):
+        """Add item to shopping cart"""
+        cart_key = f"cart:{user_id}"
+        
+        item_data = {
+            'product_id': product_id,
+            'quantity': quantity,
+            'price': price,
+            'added_at': time.time()
+        }
+        
+        # Add item to cart hash
+        self.redis.hset(cart_key, product_id, json.dumps(item_data))
+        self.redis.expire(cart_key, self.cart_ttl)
+        
+        # Update cart summary
+        self.update_cart_summary(user_id)
+        
+        # Track for abandoned cart analysis
+        self.redis.zadd('cart_activity', {user_id: time.time()})
+    
+    def update_cart_summary(self, user_id: str):
+        """Update cart total and item count"""
+        cart_key = f"cart:{user_id}"
+        cart_items = self.redis.hgetall(cart_key)
+        
+        total_amount = 0
+        total_items = 0
+        
+        for item_json in cart_items.values():
+            item = json.loads(item_json)
+            total_amount += item['price'] * item['quantity']
+            total_items += item['quantity']
+        
+        # Store summary
+        summary_key = f"cart_summary:{user_id}"
+        self.redis.hset(summary_key, mapping={
+            'total_amount': total_amount,
+            'total_items': total_items,
+            'updated_at': time.time()
+        })
+        self.redis.expire(summary_key, self.cart_ttl)
+    
+    def get_cart(self, user_id: str):
+        """Get complete cart with items and summary"""
+        cart_key = f"cart:{user_id}"
+        summary_key = f"cart_summary:{user_id}"
+        
+        cart_items = self.redis.hgetall(cart_key)
+        cart_summary = self.redis.hgetall(summary_key)
+        
+        items = []
+        for product_id, item_json in cart_items.items():
+            item = json.loads(item_json)
+            item['product_id'] = product_id
+            items.append(item)
+        
+        return {
+            'items': items,
+            'summary': cart_summary,
+            'item_count': len(items)
+        }
+    
+    def remove_item(self, user_id: str, product_id: str):
+        """Remove item from cart"""
+        cart_key = f"cart:{user_id}"
+        removed = self.redis.hdel(cart_key, product_id)
+        
+        if removed:
+            self.update_cart_summary(user_id)
+            return True
+        return False
+    
+    def clear_cart(self, user_id: str):
+        """Clear entire cart"""
+        cart_key = f"cart:{user_id}"
+        summary_key = f"cart_summary:{user_id}"
+        
+        self.redis.delete(cart_key, summary_key)
+        self.redis.zrem('cart_activity', user_id)
+    
+    def find_abandoned_carts(self, hours_ago: int = 24):
+        """Find carts abandoned for specified hours"""
+        cutoff_time = time.time() - (hours_ago * 3600)
+        
+        abandoned_users = self.redis.zrangebyscore(
+            'cart_activity', 0, cutoff_time
+        )
+        
+        abandoned_carts = []
+        for user_id in abandoned_users:
+            cart = self.get_cart(user_id)
+            if cart['items']:  # Has items
+                abandoned_carts.append({
+                    'user_id': user_id,
+                    'cart': cart,
+                    'abandoned_hours': (time.time() - cutoff_time) / 3600
+                })
+        
+        return abandoned_carts</code></pre>
+        </section>
+
+        <section>
+            <h2>Real-time Analytics and Counters</h2>
+            
+            <h3>Website Analytics</h3>
+            <pre><code>class WebAnalytics:
+    def __init__(self, redis_client):
+        self.redis = redis_client
+    
+    def track_page_view(self, page: str, user_id: str = None, session_id: str = None):
+        """Track page view with multiple dimensions"""
+        timestamp = int(time.time())
+        date_key = time.strftime('%Y-%m-%d')
+        hour_key = time.strftime('%Y-%m-%d:%H')
+        
+        # Overall page views
+        self.redis.incr(f"analytics:page_views:{page}:{date_key}")
+        self.redis.incr(f"analytics:page_views:{page}:{hour_key}")
+        
+        # Unique visitors (using HyperLogLog for memory efficiency)
+        if user_id:
+            self.redis.pfadd(f"analytics:unique_visitors:{date_key}", user_id)
+            self.redis.pfadd(f"analytics:unique_visitors:{page}:{date_key}", user_id)
+        
+        # Real-time analytics (last 1000 views)
+        view_data = {
+            'page': page,
+            'timestamp': timestamp,
+            'user_id': user_id,
+            'session_id': session_id
+        }
+        self.redis.lpush('analytics:realtime_views', json.dumps(view_data))
+        self.redis.ltrim('analytics:realtime_views', 0, 999)
+        
+        # Popular pages leaderboard
+        self.redis.zincrby(f"analytics:popular_pages:{date_key}", 1, page)
+        
+        # Set expiration for daily keys
+        self.redis.expire(f"analytics:page_views:{page}:{date_key}", 86400 * 30)
+        self.redis.expire(f"analytics:unique_visitors:{date_key}", 86400 * 30)
+    
+    def track_user_action(self, action: str, user_id: str, metadata: dict = None):
+        """Track user actions for funnel analysis"""
+        timestamp = int(time.time())
+        
+        action_data = {
+            'action': action,
+            'user_id': user_id,
+            'timestamp': timestamp,
+            'metadata': metadata or {}
+        }
+        
+        # Store in user's action timeline
+        self.redis.lpush(f"user_actions:{user_id}", json.dumps(action_data))
+        self.redis.expire(f"user_actions:{user_id}", 86400 * 30)
+        
+        # Track action counts
+        date_key = time.strftime('%Y-%m-%d')
+        self.redis.incr(f"analytics:actions:{action}:{date_key}")
+        
+        # Funnel tracking
+        self.redis.sadd(f"funnel:{action}:{date_key}", user_id)
+        self.redis.expire(f"funnel:{action}:{date_key}", 86400 * 30)
+    
+    def get_real_time_stats(self):
+        """Get real-time analytics dashboard data"""
+        # Current active users (last 5 minutes)
+        five_min_ago = time.time() - 300
+        recent_views = self.redis.lrange('analytics:realtime_views', 0, -1)
+        
+        active_users = set()
+        page_views = {}
+        
+        for view_json in recent_views:
+            view = json.loads(view_json)
+            if view['timestamp'] > five_min_ago:
+                if view['user_id']:
+                    active_users.add(view['user_id'])
+                
+                page = view['page']
+                page_views[page] = page_views.get(page, 0) + 1
+        
+        # Today's stats
+        today = time.strftime('%Y-%m-%d')
+        unique_visitors_today = self.redis.pfcount(f"analytics:unique_visitors:{today}")
+        
+        return {
+            'active_users_5min': len(active_users),
+            'unique_visitors_today': unique_visitors_today,
+            'top_pages_5min': sorted(page_views.items(), key=lambda x: x[1], reverse=True)[:10],
+            'timestamp': time.time()
+        }
+    
+    def get_conversion_funnel(self, funnel_steps: list, date: str = None):
+        """Calculate conversion funnel metrics"""
+        if not date:
+            date = time.strftime('%Y-%m-%d')
+        
+        funnel_data = []
+        previous_users = None
+        
+        for step in funnel_steps:
+            step_users = self.redis.smembers(f"funnel:{step}:{date}")
+            step_count = len(step_users)
+            
+            conversion_rate = 100.0
+            if previous_users is not None:
+                conversion_rate = (step_count / len(previous_users) * 100) if previous_users else 0
+            
+            funnel_data.append({
+                'step': step,
+                'users': step_count,
+                'conversion_rate': conversion_rate
+            })
+            
+            previous_users = step_users
+        
+        return funnel_data</code></pre>
+
+            <h3>Gaming Leaderboards</h3>
+            <pre><code>class GamingLeaderboards:
+    def __init__(self, redis_client):
+        self.redis = redis_client
+    
+    def update_player_score(self, player_id: str, game_mode: str, score: int, 
+                           match_data: dict = None):
+        """Update player score and rankings"""
+        # Global leaderboard
+        global_key = f"leaderboard:global:{game_mode}"
+        self.redis.zadd(global_key, {player_id: score})
+        
+        # Weekly leaderboard
+        week_key = time.strftime('%Y-W%U')
+        weekly_key = f"leaderboard:weekly:{game_mode}:{week_key}"
+        self.redis.zadd(weekly_key, {player_id: score})
+        self.redis.expire(weekly_key, 86400 * 14)  # Keep for 2 weeks
+        
+        # Daily leaderboard
+        daily_key = f"leaderboard:daily:{game_mode}:{time.strftime('%Y-%m-%d')}"
+        self.redis.zadd(daily_key, {player_id: score})
+        self.redis.expire(daily_key, 86400 * 7)  # Keep for 1 week
+        
+        # Player statistics
+        stats_key = f"player_stats:{player_id}:{game_mode}"
+        current_best = self.redis.zscore(global_key, player_id)
+        
+        self.redis.hset(stats_key, mapping={
+            'last_score': score,
+            'best_score': current_best,
+            'last_played': time.time(),
+            'total_games': self.redis.hincrby(stats_key, 'total_games', 1)
+        })
+        
+        # Match history
+        if match_data:
+            match_record = {
+                'score': score,
+                'timestamp': time.time(),
+                **match_data
+            }
+            self.redis.lpush(f"match_history:{player_id}", json.dumps(match_record))
+            self.redis.ltrim(f"match_history:{player_id}", 0, 99)  # Keep last 100 matches
+    
+    def get_leaderboard(self, game_mode: str, leaderboard_type: str = 'global', 
+                       start: int = 0, end: int = 99):
+        """Get leaderboard rankings"""
+        if leaderboard_type == 'weekly':
+            week_key = time.strftime('%Y-W%U')
+            key = f"leaderboard:weekly:{game_mode}:{week_key}"
+        elif leaderboard_type == 'daily':
+            key = f"leaderboard:daily:{game_mode}:{time.strftime('%Y-%m-%d')}"
+        else:
+            key = f"leaderboard:global:{game_mode}"
+        
+        # Get top players with scores
+        top_players = self.redis.zrevrange(key, start, end, withscores=True)
+        
+        leaderboard = []
+        for rank, (player_id, score) in enumerate(top_players, start + 1):
+            player_data = {
+                'rank': rank,
+                'player_id': player_id,
+                'score': int(score)
+            }
+            
+            # Add player info if available
+            player_info = self.redis.hgetall(f"player_info:{player_id}")
+            if player_info:
+                player_data.update(player_info)
+            
+            leaderboard.append(player_data)
+        
+        return leaderboard
+    
+    def get_player_ranking(self, player_id: str, game_mode: str):
+        """Get player's current ranking across different leaderboards"""
+        rankings = {}
+        
+        # Global ranking
+        global_key = f"leaderboard:global:{game_mode}"
+        global_rank = self.redis.zrevrank(global_key, player_id)
+        global_score = self.redis.zscore(global_key, player_id)
+        
+        if global_rank is not None:
+            rankings['global'] = {
+                'rank': global_rank + 1,
+                'score': int(global_score),
+                'total_players': self.redis.zcard(global_key)
+            }
+        
+        # Weekly ranking
+        week_key = time.strftime('%Y-W%U')
+        weekly_key = f"leaderboard:weekly:{game_mode}:{week_key}"
+        weekly_rank = self.redis.zrevrank(weekly_key, player_id)
+        weekly_score = self.redis.zscore(weekly_key, player_id)
+        
+        if weekly_rank is not None:
+            rankings['weekly'] = {
+                'rank': weekly_rank + 1,
+                'score': int(weekly_score),
+                'total_players': self.redis.zcard(weekly_key)
+            }
+        
+        return rankings
+    
+    def get_nearby_players(self, player_id: str, game_mode: str, range_size: int = 5):
+        """Get players ranked around the specified player"""
+        global_key = f"leaderboard:global:{game_mode}"
+        player_rank = self.redis.zrevrank(global_key, player_id)
+        
+        if player_rank is None:
+            return []
+        
+        # Get players around current player
+        start = max(0, player_rank - range_size)
+        end = player_rank + range_size
+        
+        nearby = self.redis.zrevrange(global_key, start, end, withscores=True)
+        
+        nearby_players = []
+        for rank, (nearby_player_id, score) in enumerate(nearby, start + 1):
+            nearby_players.append({
+                'rank': rank,
+                'player_id': nearby_player_id,
+                'score': int(score),
+                'is_current_player': nearby_player_id == player_id
+            })
+        
+        return nearby_players</code></pre>
+        </section>
+
+        <section>
+            <h2>Rate Limiting and Throttling</h2>
+            
+            <h3>API Rate Limiting</h3>
+            <pre><code>class APIRateLimiter:
+    def __init__(self, redis_client):
+        self.redis = redis_client
+    
+    def sliding_window_rate_limit(self, identifier: str, limit: int, window_seconds: int):
+        """Sliding window rate limiting algorithm"""
+        current_time = time.time()
+        window_start = current_time - window_seconds
+        
+        key = f"rate_limit:sliding:{identifier}"
+        
+        # Remove old entries
+        self.redis.zremrangebyscore(key, 0, window_start)
+        
+        # Count current requests
+        current_requests = self.redis.zcard(key)
+        
+        if current_requests >= limit:
+            # Rate limit exceeded
+            return {
+                'allowed': False,
+                'current_requests': current_requests,
+                'limit': limit,
+                'reset_time': window_start + window_seconds,
+                'retry_after': window_seconds
+            }
+        
+        # Add current request
+        request_id = f"{current_time}:{hash(identifier)}"
+        self.redis.zadd(key, {request_id: current_time})
+        self.redis.expire(key, window_seconds + 1)
+        
+        return {
+            'allowed': True,
+            'current_requests': current_requests + 1,
+            'limit': limit,
+            'remaining': limit - current_requests - 1
+        }
+    
+    def token_bucket_rate_limit(self, identifier: str, capacity: int, refill_rate: float):
+        """Token bucket rate limiting algorithm"""
+        key = f"rate_limit:token_bucket:{identifier}"
+        
+        # Get current bucket state
+        bucket_data = self.redis.hgetall(key)
+        
+        current_time = time.time()
+        
+        if bucket_data:
+            tokens = float(bucket_data.get('tokens', capacity))
+            last_refill = float(bucket_data.get('last_refill', current_time))
+        else:
+            tokens = capacity
+            last_refill = current_time
+        
+        # Calculate tokens to add based on time elapsed
+        time_elapsed = current_time - last_refill
+        tokens_to_add = time_elapsed * refill_rate
+        tokens = min(capacity, tokens + tokens_to_add)
+        
+        if tokens >= 1:
+            # Allow request and consume token
+            tokens -= 1
+            
+            self.redis.hset(key, mapping={
+                'tokens': tokens,
+                'last_refill': current_time
+            })
+            self.redis.expire(key, int(capacity / refill_rate) + 60)
+            
+            return {
+                'allowed': True,
+                'tokens_remaining': tokens,
+                'capacity': capacity
+            }
+        else:
+            # Rate limit exceeded
+            retry_after = (1 - tokens) / refill_rate
+            
+            return {
+                'allowed': False,
+                'tokens_remaining': tokens,
+                'capacity': capacity,
+                'retry_after': retry_after
+            }
+    
+    def distributed_rate_limit(self, identifier: str, limit: int, window_seconds: int):
+        """Distributed rate limiting using Lua script for atomicity"""
+        lua_script = """
+        local key = KEYS[1]
+        local limit = tonumber(ARGV[1])
+        local window = tonumber(ARGV[2])
+        local current_time = tonumber(ARGV[3])
+        
+        -- Remove expired entries
+        redis.call('ZREMRANGEBYSCORE', key, 0, current_time - window)
+        
+        -- Get current count
+        local current_count = redis.call('ZCARD', key)
+        
+        if current_count >= limit then
+            return {0, current_count, limit}
+        else
+            -- Add current request
+            redis.call('ZADD', key, current_time, current_time)
+            redis.call('EXPIRE', key, window + 1)
+            return {1, current_count + 1, limit}
+        end
+        """
+        
+        result = self.redis.eval(
+            lua_script, 
+            1, 
+            f"rate_limit:distributed:{identifier}",
+            limit, 
+            window_seconds, 
+            time.time()
+        )
+        
+        allowed, current_count, rate_limit = result
+        
+        return {
+            'allowed': bool(allowed),
+            'current_requests': current_count,
+            'limit': rate_limit,
+            'remaining': rate_limit - current_count
+        }</code></pre>
+
+            <h3>Geographic and User-based Throttling</h3>
+            <pre><code>class AdvancedThrottling:
+    def __init__(self, redis_client):
+        self.redis = redis_client
+        self.rate_limiter = APIRateLimiter(redis_client)
+    
+    def multi_tier_rate_limit(self, user_id: str, user_tier: str, endpoint: str, 
+                             ip_address: str):
+        """Multi-tier rate limiting based on user type and endpoint"""
+        
+        # Define limits per tier
+        tier_limits = {
+            'free': {'requests_per_hour': 100, 'requests_per_minute': 10},
+            'premium': {'requests_per_hour': 1000, 'requests_per_minute': 50},
+            'enterprise': {'requests_per_hour': 10000, 'requests_per_minute': 200}
+        }
+        
+        # Endpoint-specific limits
+        endpoint_multipliers = {
+            '/api/search': 0.5,      # More expensive endpoint
+            '/api/data': 1.0,        # Standard endpoint
+            '/api/status': 2.0       # Cheaper endpoint
+        }
+        
+        user_limits = tier_limits.get(user_tier, tier_limits['free'])
+        endpoint_multiplier = endpoint_multipliers.get(endpoint, 1.0)
+        
+        # Apply multiplier
+        hourly_limit = int(user_limits['requests_per_hour'] * endpoint_multiplier)
+        minute_limit = int(user_limits['requests_per_minute'] * endpoint_multiplier)
+        
+        # Check multiple rate limits
+        checks = [
+            # Per-user hourly limit
+            self.rate_limiter.sliding_window_rate_limit(
+                f"user:{user_id}:hourly", hourly_limit, 3600
+            ),
+            # Per-user minute limit
+            self.rate_limiter.sliding_window_rate_limit(
+                f"user:{user_id}:minute", minute_limit, 60
+            ),
+            # Per-IP limit (prevent abuse)
+            self.rate_limiter.sliding_window_rate_limit(
+                f"ip:{ip_address}:hourly", 500, 3600
+            ),
+            # Per-endpoint global limit
+            self.rate_limiter.sliding_window_rate_limit(
+                f"endpoint:{endpoint}:minute", 1000, 60
+            )
+        ]
+        
+        # Find most restrictive limit
+        for check in checks:
+            if not check['allowed']:
+                return check
+        
+        # All checks passed
+        return {'allowed': True, 'checks_passed': len(checks)}
+    
+    def geographic_rate_limit(self, ip_address: str, country_code: str):
+        """Geographic-based rate limiting"""
+        
+        # Country-specific limits
+        country_limits = {
+            'US': 1000,    # Higher limit for primary market
+            'CA': 1000,
+            'GB': 800,
+            'DE': 800,
+            'default': 200  # Conservative limit for other countries
+        }
+        
+        limit = country_limits.get(country_code, country_limits['default'])
+        
+        return self.rate_limiter.sliding_window_rate_limit(
+            f"geo:{country_code}:hourly", limit, 3600
+        )
+    
+    def adaptive_rate_limit(self, identifier: str, base_limit: int, window_seconds: int):
+        """Adaptive rate limiting based on system load"""
+        
+        # Check system load indicators
+        system_load = self.get_system_load_factor()
+        
+        # Adjust limit based on load
+        adjusted_limit = int(base_limit * system_load)
+        
+        return self.rate_limiter.sliding_window_rate_limit(
+            identifier, adjusted_limit, window_seconds
+        )
+    
+    def get_system_load_factor(self) -> float:
+        """Calculate system load factor (0.1 to 1.0)"""
+        
+        # Check various system metrics
+        metrics = {
+            'cpu_usage': float(self.redis.get('system:cpu_usage') or 50),
+            'memory_usage': float(self.redis.get('system:memory_usage') or 50),
+            'active_connections': int(self.redis.get('system:active_connections') or 100),
+            'error_rate': float(self.redis.get('system:error_rate') or 0)
+        }
+        
+        # Calculate load factor
+        cpu_factor = max(0.1, 1.0 - (metrics['cpu_usage'] - 70) / 30)
+        memory_factor = max(0.1, 1.0 - (metrics['memory_usage'] - 80) / 20)
+        error_factor = max(0.1, 1.0 - metrics['error_rate'] / 10)
+        
+        return min(cpu_factor, memory_factor, error_factor)</code></pre>
+        </section>
+
+        <section>
+            <h2>IoT and Time-Series Data</h2>
+            
+            <h3>Sensor Data Collection</h3>
+            <pre><code>class IoTDataManager:
+    def __init__(self, redis_client):
+        self.redis = redis_client
+    
+    def store_sensor_reading(self, device_id: str, sensor_type: str, value: float, 
+                           timestamp: int = None, metadata: dict = None):
+        """Store IoT sensor reading with time-series data"""
+        if timestamp is None:
+            timestamp = int(time.time() * 1000)  # milliseconds
+        
+        # Store in time-series stream
+        stream_key = f"sensor_data:{device_id}:{sensor_type}"
+        
+        data_point = {
+            'value': value,
+            'timestamp': timestamp,
+            'device_id': device_id,
+            'sensor_type': sensor_type
+        }
+        
+        if metadata:
+            data_point.update(metadata)
+        
+        # Add to stream
+        self.redis.xadd(stream_key, data_point, maxlen=10000)  # Keep last 10k readings
+        
+        # Update latest value for quick access
+        latest_key = f"sensor_latest:{device_id}:{sensor_type}"
+        self.redis.hset(latest_key, mapping={
+            'value': value,
+            'timestamp': timestamp,
+            'updated_at': time.time()
+        })
+        self.redis.expire(latest_key, 86400)  # Expire after 24 hours
+        
+        # Update device status
+        self.update_device_status(device_id, timestamp)
+        
+        # Check for alerts
+        self.check_sensor_alerts(device_id, sensor_type, value)
+    
+    def update_device_status(self, device_id: str, last_seen: int):
+        """Update device online status"""
+        device_key = f"device_status:{device_id}"
+        
+        self.redis.hset(device_key, mapping={
+            'last_seen': last_seen,
+            'status': 'online',
+            'updated_at': time.time()
+        })
+        self.redis.expire(device_key, 300)  # Device considered offline after 5 minutes
+    
+    def check_sensor_alerts(self, device_id: str, sensor_type: str, value: float):
+        """Check if sensor reading triggers any alerts"""
+        
+        # Get alert thresholds for this sensor
+        alert_config = self.redis.hgetall(f"alert_config:{device_id}:{sensor_type}")
+        
+        if not alert_config:
+            return
+        
+        alerts_triggered = []
+        
+        # Check various thresholds
+        if 'max_value' in alert_config and value > float(alert_config['max_value']):
+            alerts_triggered.append('value_too_high')
+        
+        if 'min_value' in alert_config and value < float(alert_config['min_value']):
+            alerts_triggered.append('value_too_low')
+        
+        # Check rate of change
+        if 'max_change_rate' in alert_config:
+            recent_values = self.get_recent_values(device_id, sensor_type, count=2)
+            if len(recent_values) >= 2:
+                change_rate = abs(recent_values[0] - recent_values[1])
+                if change_rate > float(alert_config['max_change_rate']):
+                    alerts_triggered.append('rapid_change')
+        
+        # Send alerts
+        for alert_type in alerts_triggered:
+            self.send_alert(device_id, sensor_type, alert_type, value)
+    
+    def send_alert(self, device_id: str, sensor_type: str, alert_type: str, value: float):
+        """Send alert to monitoring system"""
+        alert_data = {
+            'device_id': device_id,
+            'sensor_type': sensor_type,
+            'alert_type': alert_type,
+            'value': value,
+            'timestamp': time.time()
+        }
+        
+        # Store alert
+        alert_key = f"alerts:{device_id}"
+        self.redis.lpush(alert_key, json.dumps(alert_data))
+        self.redis.ltrim(alert_key, 0, 99)  # Keep last 100 alerts
+        
+        # Publish to alert channel
+        self.redis.publish('iot_alerts', json.dumps(alert_data))
+    
+    def get_recent_values(self, device_id: str, sensor_type: str, count: int = 10):
+        """Get recent sensor values"""
+        stream_key = f"sensor_data:{device_id}:{sensor_type}"
+        
+        # Get recent entries from stream
+        entries = self.redis.xrevrange(stream_key, count=count)
+        
+        values = []
+        for entry_id, fields in entries:
+            if 'value' in fields:
+                values.append(float(fields['value']))
+        
+        return values
+    
+    def get_device_summary(self, device_id: str):
+        """Get device summary with all sensors"""
+        # Get all sensor types for device
+        pattern = f"sensor_latest:{device_id}:*"
+        keys = self.redis.keys(pattern)
+        
+        sensors = {}
+        for key in keys:
+            sensor_type = key.split(':')[-1]
+            sensor_data = self.redis.hgetall(key)
+            if sensor_data:
+                sensors[sensor_type] = {
+                    'value': float(sensor_data['value']),
+                    'timestamp': int(sensor_data['timestamp']),
+                    'age_seconds': time.time() - float(sensor_data['updated_at'])
+                }
+        
+        # Get device status
+        device_status = self.redis.hgetall(f"device_status:{device_id}")
+        
+        # Get recent alerts
+        recent_alerts = self.redis.lrange(f"alerts:{device_id}", 0, 9)
+        alerts = [json.loads(alert) for alert in recent_alerts]
+        
+        return {
+            'device_id': device_id,
+            'sensors': sensors,
+            'status': device_status,
+            'recent_alerts': alerts,
+            'summary_generated_at': time.time()
+        }</code></pre>
+        </section>
+
+        <section>
+            <h2>Key Takeaways</h2>
+            <ul>
+                <li>Redis excels in caching, session management, and real-time analytics</li>
+                <li>Choose appropriate data structures for specific use cases</li>
+                <li>Implement proper TTL and cleanup strategies</li>
+                <li>Use Redis for rate limiting and throttling mechanisms</li>
+                <li>Leverage Redis for IoT data collection and time-series storage</li>
+                <li>Design for scalability and performance from the start</li>
+                <li>Monitor and optimize based on actual usage patterns</li>
+            </ul>
+        </section>
+    </main>
+
+    <footer>
+        <hr>
+        <p><strong>Previous:</strong> <a href="12-redis-security-best-practices.html">Redis Security Best Practices</a></p>
+        <p><strong>Next up:</strong> Redis Development Best Practices and Patterns</p>
+    </footer>
+</body>
+</html>
